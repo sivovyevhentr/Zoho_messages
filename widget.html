@@ -1,16 +1,12 @@
-HTML
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WhatsApp Viewer for Zoho CRM</title>
-    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Zoho CRM JS SDK -->
     <script src="https://live.zwidgets.com/js-sdk/1.1/ZohoEmbededAppSDK.min.js"></script>
     <style>
-        /* WhatsApp-like scrollbar formatting */
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #bababa; border-radius: 3px; }
@@ -18,32 +14,26 @@ HTML
 </head>
 <body class="bg-[#f0f2f5] h-screen flex flex-col font-sans text-[#111b21] overflow-hidden">
 
-    <!-- App Container -->
     <div class="flex flex-1 h-full w-full bg-[#eae6df] overflow-hidden">
         
-        <!-- Left Sidebar: Conversations List -->
         <div class="w-1/3 bg-white border-r border-[#e9edef] flex flex-col h-full">
             <div class="bg-[#f0f2f5] p-4 flex items-center justify-between border-b border-[#e9edef]">
                 <h2 class="text-lg font-bold text-[#008069]">WhatsApp Chats</h2>
             </div>
-            <!-- Chats List Container -->
             <div id="chats-list" class="flex-1 overflow-y-auto custom-scrollbar bg-white">
                 <div class="p-4 text-center text-gray-500">Loading chats...</div>
             </div>
         </div>
 
-        <!-- Right Main: Active Chat Message Feed -->
-        <div class="w-2/3 flex flex-col h-full bg-[#efeae2] relative" style="background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-opacity: 0.06;">
+        <div class="w-2/3 flex flex-col h-full bg-[#efeae2] relative" style="background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-repeat: repeat; opacity: 0.99;">
             
-            <!-- Chat Window Header -->
-            <div class="bg-[#f0f2f5] px-4 py-3 flex items-center border-b border-[#e9edef] z-10">
+            <div class="bg-[#f0f2f5] px-4 py-3 flex items-center border-b border-[#e9edef] z-10 w-full">
                 <div class="ml-2">
                     <p id="active-chat-name" class="font-semibold text-gray-800">Select a conversation to start reading</p>
                     <p id="active-chat-status" class="text-xs text-gray-500"></p>
                 </div>
             </div>
 
-            <!-- Messages Stream Area -->
             <div id="message-container" class="flex-1 overflow-y-auto p-6 flex flex-col space-y-3 custom-scrollbar">
                 <div class="m-auto text-center text-gray-500 bg-white bg-opacity-80 px-4 py-2 rounded-lg shadow-sm">
                     Select a conversation from the sidebar.
@@ -53,12 +43,12 @@ HTML
     </div>
 
     <script>
-        // Adjust these API Names to exactly match your CRM custom modules
+        // MATCHED TO YOUR CRM API NAMES
         const CONFIG = {
-            CONVERSATIONS_MODULE: "Conversations", // API Name of the Parent Module
-            MESSAGES_MODULE: "Conversation_messages", // API Name of the Child Module
-            CONTACTS_LOOKUP_IN_CONV: "Contact_Name", // Field in Conversations that points to Contacts
-            CONV_LOOKUP_IN_MSG: "Conversation_Link" // Field in Conversation messages pointing to Conversations
+            CONVERSATIONS_MODULE: "CustomModule1",      // Conversations
+            MESSAGES_MODULE: "CustomModule2",           // Conersation Messages
+            CONTACTS_LOOKUP_IN_CONV: "Contact",         // Field linking CustomModule1 -> Contacts
+            CONV_LOOKUP_IN_MSG: "Conversation_link"     // Field linking CustomModule2 -> CustomModule1
         };
 
         let currentContactId = null;
@@ -68,6 +58,8 @@ HTML
             if (data && data.EntityId && data.EntityId.length > 0) {
                 currentContactId = data.EntityId[0];
                 loadConversations(currentContactId);
+            } else {
+                document.getElementById('chats-list').innerHTML = `<div class="p-4 text-red-500">Could not identify Contact context ID.</div>`;
             }
         });
 
@@ -77,8 +69,8 @@ HTML
         function loadConversations(contactId) {
             const chatListDiv = document.getElementById('chats-list');
             
-            // Query conversations using COQL (most reliable way to filter custom lookups)
-            const query = `select id, Name, Last_Message_Time from ${CONFIG.CONVERSATIONS_MODULE} where ${CONFIG.CONTACTS_LOOKUP_IN_CONV} = ${contactId} order by Last_Message_Time desc`;
+            // Build the COQL query using updated API names
+            const query = `select id, Name, Modified_Time from ${CONFIG.CONVERSATIONS_MODULE} where ${CONFIG.CONTACTS_LOOKUP_IN_CONV} = ${contactId} order by Modified_Time desc`;
             
             ZOHO.CRM.API.coql({ select_query: query })
                 .then(function(response) {
@@ -89,14 +81,14 @@ HTML
                     }
 
                     response.data.forEach(chat => {
-                        const dateStr = chat.Last_Message_Time ? new Date(chat.Last_Message_Time).toLocaleDateString() : '';
+                        const dateStr = chat.Modified_Time ? new Date(chat.Modified_Time).toLocaleDateString() : '';
                         const chatEl = document.createElement('div');
                         chatEl.className = "flex items-center justify-between p-4 border-b border-[#f0f2f5] hover:bg-[#f0f2f5] cursor-pointer transition";
                         chatEl.onclick = () => selectConversation(chat.id, chat.Name);
                         chatEl.innerHTML = `
                             <div class="flex-1 min-w-0">
                                 <p class="font-medium text-[#111b21] truncate">${chat.Name}</p>
-                                <p class="text-xs text-gray-400">ID: ${chat.id}</p>
+                                <p class="text-[10px] text-gray-400">ID: ${chat.id}</p>
                             </div>
                             <span class="text-xs text-gray-400 ml-2 whitespace-nowrap">${dateStr}</span>
                         `;
@@ -105,7 +97,7 @@ HTML
                 })
                 .catch(err => {
                     console.error("Error loading conversations", err);
-                    chatListDiv.innerHTML = `<div class="p-4 text-center text-red-500">Failed to load conversations. Check CRM field mapping settings.</div>`;
+                    showDiagnosticError(chatListDiv, "Conversations (CustomModule1)", err, query);
                 });
         }
 
@@ -116,8 +108,8 @@ HTML
             const messageContainer = document.getElementById('message-container');
             messageContainer.innerHTML = `<div class="m-auto text-gray-500">Retrieving messages...</div>`;
 
-            // Pull related messages ordered by date/ID
-            const query = `select id, Message_ID, Direction, Message_Body, Attachments, Created_Time from ${CONFIG.MESSAGES_MODULE} where ${CONFIG.CONV_LOOKUP_IN_MSG} = ${conversationId} order by Created_Time asc`;
+            // Query messages
+            const query = `select id, Message_ID, Direction, Message_Body, Created_Time from ${CONFIG.MESSAGES_MODULE} where ${CONFIG.CONV_LOOKUP_IN_MSG} = ${conversationId} order by Created_Time asc`;
             
             ZOHO.CRM.API.coql({ select_query: query })
                 .then(function(response) {
@@ -130,28 +122,19 @@ HTML
                     }
 
                     response.data.forEach(msg => {
-                        // Check message direction (Inbound/Incoming vs Outbound/Outgoing)
                         const isIncoming = String(msg.Direction).toLowerCase().includes('in'); 
                         const bubbleWrapper = document.createElement('div');
                         bubbleWrapper.className = `flex w-full ${isIncoming ? 'justify-start' : 'justify-end'}`;
 
                         const bubble = document.createElement('div');
-                        // WhatsApp style colors: Greenish for outgoing, pure white for incoming
                         bubble.className = `max-w-[70%] rounded-lg px-3 py-2 shadow-sm text-sm relative flex flex-col ${
                             isIncoming 
                                 ? 'bg-white text-[#111b21] rounded-tl-none' 
                                 : 'bg-[#d9fdd3] text-[#111b21] rounded-tr-none'
                         }`;
 
-                        // Content composition
                         let contentHtml = `<p class="whitespace-pre-wrap break-words leading-relaxed">${msg.Message_Body || ""}</p>`;
                         
-                        // Parse Attachments (Supports direct URLs and JSON file lists from custom CRM upload fields)
-                        if (msg.Attachments) {
-                            contentHtml += parseAndRenderAttachments(msg.Attachments);
-                        }
-
-                        // Parse timestamp
                         const timeStr = msg.Created_Time ? new Date(msg.Created_Time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
                         contentHtml += `
                             <span class="text-[10px] text-gray-500 self-end mt-1 select-none whitespace-nowrap">
@@ -164,47 +147,25 @@ HTML
                         messageContainer.appendChild(bubbleWrapper);
                     });
 
-                    // Scroll to the bottom of the feed immediately
                     messageContainer.scrollTop = messageContainer.scrollHeight;
                 })
                 .catch(err => {
                     console.error("Error loading messages", err);
-                    messageContainer.innerHTML = `<div class="m-auto text-red-500">Error rendering message logs.</div>`;
+                    showDiagnosticError(messageContainer, "Messages (CustomModule2)", err, query);
                 });
         }
 
-        // Helper to evaluate and render attachment field formats (images vs docs)
-        function parseAndRenderAttachments(attachmentField) {
-            if (!attachmentField) return '';
-            
-            // Case 1: Standard URL String (Image or Document link)
-            if (typeof attachmentField === 'string' && (attachmentField.startsWith('http') || attachmentField.startsWith('/'))) {
-                return renderSingleAttachment(attachmentField);
-            }
-
-            // Case 2: Multi-file array format from CRM JSON
-            try {
-                const files = typeof attachmentField === 'string' ? JSON.parse(attachmentField) : attachmentField;
-                if (Array.isArray(files)) {
-                    return files.map(file => renderSingleAttachment(file.attachment_Url || file.url || file, file.file_Name || file.name)).join('');
-                }
-            } catch(e) {
-                // Return as raw text string if parser fails
-                return `<p class="text-xs text-gray-500 italic mt-1">Attachment Metadata: ${attachmentField}</p>`;
-            }
-            return '';
-        }
-
-        function renderSingleAttachment(url, name = "View File") {
-            const isImage = url.match(/\.(jpeg|jpg|gif|png|webp)/i);
-            if (isImage) {
-                return `<img src="${url}" alt="Image" class="rounded-lg max-w-xs my-2 max-h-48 object-cover cursor-pointer border border-gray-200" onclick="window.open('${url}', '_blank')" />`;
-            }
-            return `
-                <a href="${url}" target="_blank" class="flex items-center gap-2 bg-black bg-opacity-5 p-2 rounded-md text-[#008069] font-medium hover:underline text-xs my-1">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                    <span>${name}</span>
-                </a>`;
+        // Helper to output visual errors in case of API name mismatches
+        function showDiagnosticError(targetElement, contextName, errorObj, attemptedQuery) {
+            targetElement.innerHTML = `
+                <div class="p-4 m-2 bg-red-50 border border-red-200 rounded-lg text-red-700 text-xs">
+                    <p class="font-bold text-sm mb-1">⚠️ API Error in ${contextName}</p>
+                    <p class="mb-2">This is usually caused by a field API Name mismatch in Zoho CRM.</p>
+                    <p class="font-semibold mt-2">Error Details:</p>
+                    <pre class="bg-red-100 p-2 rounded overflow-auto max-h-32 font-mono text-[10px]">${JSON.stringify(errorObj, null, 2)}</pre>
+                    <p class="font-semibold mt-2">Attempted Query:</p>
+                    <pre class="bg-gray-100 p-2 rounded overflow-auto font-mono text-[10px] text-gray-600 whitespace-pre-wrap">${attemptedQuery}</pre>
+                </div>`;
         }
     </script>
 </body>
