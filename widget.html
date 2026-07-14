@@ -26,7 +26,7 @@
             </div>
 
             <div class="border-t border-gray-200 bg-gray-50 p-2 text-xs">
-                <details class="cursor-pointer">
+                <details class="cursor-pointer" open>
                     <summary class="font-semibold text-gray-700 select-none">🛠️ System Connection Logs</summary>
                     <div class="mt-2 space-y-1 font-mono text-[10px] text-gray-600 bg-white p-2 border rounded max-h-32 overflow-y-auto" id="diagnostic-logs">
                     </div>
@@ -58,12 +58,12 @@
             CONTACTS_LOOKUP_IN_CONV: "Contact",            
             CONV_LOOKUP_IN_MSG: "Conversation",
             
-            // Шаблон ссылки Wasabi S3
+            // Базовый путь для Wasabi S3
             S3_BASE_URL: "https://s3.eu-central-1.wasabisys.com/in-files"
         };
 
         let currentContactId = null;
-        let activeChatPhone = ""; // Переменная для хранения очищенного номера текущего чата
+        let handshakeCompleted = false; // Триггер успешного подключения
 
         function logDebug(message, type = "info") {
             const logsDiv = document.getElementById('diagnostic-logs');
@@ -74,31 +74,48 @@
             }
         }
 
-        logDebug("Widget loaded. Ready for Search API...");
-        
-        ZOHO.embeddedApp.on("PageLoad", function(data) {
-            logDebug("Zoho handshake complete!", "success");
-            
-            if (data && data.EntityId) {
-                if (Array.isArray(data.EntityId) && data.EntityId.length > 0) {
-                    currentContactId = data.EntityId[0];
-                } else if (typeof data.EntityId === "string") {
-                    currentContactId = data.EntityId;
-                }
+        // Централизованная функция инициализации
+        function initializeWidget(entityId) {
+            if (handshakeCompleted) return;
+            handshakeCompleted = true;
+            currentContactId = entityId;
+            logDebug(`Target Contact ID Resolved: ${currentContactId}`, "success");
+            loadConversations(currentContactId);
+        }
 
-                if (currentContactId) {
-                    logDebug(`Target Contact ID: ${currentContactId}`, "success");
-                    loadConversations(currentContactId);
-                } else {
-                    logDebug("Error: Contact ID empty.", "error");
+        logDebug("Widget loaded. Starting Zoho Handshake...");
+        
+        // Сценарий 1: Стандартное событие PageLoad
+        ZOHO.embeddedApp.on("PageLoad", function(data) {
+            logDebug("Zoho PageLoad event triggered.");
+            if (data && data.EntityId) {
+                let id = Array.isArray(data.EntityId) ? data.EntityId[0] : data.EntityId;
+                if (id) {
+                    initializeWidget(id);
                 }
-            } else {
-                logDebug("Error: Missing context data.", "error");
-                document.getElementById('chats-list').innerHTML = `<div class="p-4 text-center text-red-500">Context Error</div>`;
             }
         });
 
         ZOHO.embeddedApp.init();
+
+        // Сценарий 2: Резервный Fallback, если PageLoad завис (срабатывает через 1.2 секунды)
+        setTimeout(() => {
+            if (!handshakeCompleted) {
+                logDebug("PageLoad event missed. Attempting getPageInfo fallback...");
+                ZOHO.CRM.INTERACTION.getPageInfo()
+                    .then(function(data) {
+                        if (data && data.recordId) {
+                            logDebug("Fallback successful! Retrieved ID via current page info.", "success");
+                            initializeWidget(data.recordId);
+                        } else {
+                            logDebug("Fallback failed: Page info context is empty.", "error");
+                        }
+                    })
+                    .catch(function(err) {
+                        logDebug("Fallback error during interaction: " + JSON.stringify(err), "error");
+                    });
+            }
+        }, 1200);
 
         // 1. Поиск диалогов (Левая панель)
         function loadConversations(contactId) {
@@ -110,7 +127,7 @@
                 Type: "criteria",
                 Query: `(${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`
             };
-            logDebug(`Searching conversations using Search API: (${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`);
+            logDebug(`Searching conversations: (${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`);
 
             ZOHO.CRM.API.searchRecord(searchParams)
                 .then(function(response) {
@@ -133,12 +150,8 @@
                         const chatEl = document.createElement('div');
                         chatEl.className = "flex items-center justify-between p-4 border-b border-[#f0f2f5] hover:bg-[#f0f2f5] cursor-pointer transition";
                         
-                        // При клике сохраняем очищенный номер телефона чата и открываем сообщения
-                        chatEl.onclick = () => {
-                            activeChatPhone = chat.Messager_Chat_ID ? String(chat.Messager_Chat_ID).replace(/\D/g, "") : "";
-                            logDebug(`Active phone for S3 set to: ${activeChatPhone}`);
-                            selectConversation(chat.id, chat.Name);
-                        };
+                        // Безопасно передаем Messager_Chat_ID прямо в функцию при клике
+                        chatEl.onclick = () => selectConversation(chat.id, chat.Name, chat.Messager_Chat_ID);
                         
                         chatEl.innerHTML = `
                             <div class="flex-1 min-w-0 pr-2">
@@ -158,18 +171,22 @@
         }
 
         // 2. Поиск сообщений выбранного чата (Правая панель)
-        function selectConversation(conversationId, name) {
+        function selectConversation(conversationId, name, rawPhone) {
             document.getElementById('active-chat-name').innerText = name || "WhatsApp Chat";
             document.getElementById('active-chat-status').innerText = "Streaming records...";
             const messageContainer = document.getElementById('message-container');
             messageContainer.innerHTML = `<div class="m-auto text-gray-500">Loading messages...</div>`;
+
+            // Очищаем номер телефона для Wasabi
+            const cleanPhone = rawPhone ? String(rawPhone).replace(/\D/g, "") : "";
+            logDebug(`Selected chat phone for Wasabi S3 path: ${cleanPhone}`);
 
             const searchParams = {
                 Entity: CONFIG.MESSAGES_MODULE,
                 Type: "criteria",
                 Query: `(${CONFIG.CONV_LOOKUP_IN_MSG}:equals:${conversationId})`
             };
-            logDebug(`Searching messages for Conversation: ${conversationId}`);
+            logDebug(`Searching messages for Conversation ID: ${conversationId}`);
 
             ZOHO.CRM.API.searchRecord(searchParams)
                 .then(function(response) {
@@ -183,4 +200,105 @@
 
                     logDebug(`Loaded ${response.data.length} messages. Sorting...`, "success");
                     
-                    const sortedMessages =
+                    const sortedMessages = response.data.sort((a, b) => {
+                        return new Date(a.Created_Time || 0) - new Date(b.Created_Time || 0);
+                    });
+
+                    sortedMessages.forEach(msg => {
+                        const isIncoming = msg.Direction && String(msg.Direction).toLowerCase().includes('in'); 
+                        const bubbleWrapper = document.createElement('div');
+                        bubbleWrapper.className = `flex w-full ${isIncoming ? 'justify-start' : 'justify-end'}`;
+
+                        const bubble = document.createElement('div');
+                        bubble.className = `max-w-[70%] rounded-lg px-3 py-2 shadow-sm text-sm relative flex flex-col ${
+                            isIncoming 
+                                ? 'bg-white text-[#111b21] rounded-tl-none' 
+                                : 'bg-[#d9fdd3] text-[#111b21] rounded-tr-none'
+                        }`;
+
+                        // Текст сообщения
+                        const messageText = msg.Message_Body || "";
+                        let contentHtml = `<p class="whitespace-pre-wrap break-words leading-relaxed">${messageText}</p>`;
+                        
+                        // Контейнер под прямые ссылки
+                        contentHtml += `<div id="attachments-${msg.id}" class="mt-2 flex flex-col gap-1.5 w-full"></div>`;
+                        
+                        const timeStr = msg.Created_Time ? new Date(msg.Created_Time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
+                        contentHtml += `
+                            <span class="text-[10px] text-gray-500 self-end mt-1 select-none whitespace-nowrap">
+                                ${timeStr}
+                            </span>
+                        `;
+
+                        bubble.innerHTML = contentHtml;
+                        bubbleWrapper.appendChild(bubble);
+                        messageContainer.appendChild(bubbleWrapper);
+
+                        // Передаем очищенный телефон в функцию построения S3-ссылок
+                        renderAttachmentLinks(msg.id, cleanPhone);
+                    });
+
+                    messageContainer.scrollTop = messageContainer.scrollHeight;
+                })
+                .catch(err => {
+                    logDebug(`Message Search Error: ${JSON.stringify(err)}`, "error");
+                    showDiagnosticError(messageContainer, "Messages Search Feed", err, JSON.stringify(searchParams));
+                });
+        }
+
+        // 3. Поиск связанных файлов в Zoho и генерация прямой ссылки Wasabi S3
+        function renderAttachmentLinks(messageId, phone) {
+            ZOHO.CRM.API.getRelatedRecords({
+                Entity: CONFIG.MESSAGES_MODULE,
+                RecordID: messageId,
+                RelatedList: "Attachments",
+                page: 1,
+                per_page: 5
+            })
+            .then(function(response) {
+                const container = document.getElementById(`attachments-${messageId}`);
+                if (!container) return;
+
+                if (response && response.data && response.data.length > 0) {
+                    container.innerHTML = ""; // Очищаем контейнер
+                    
+                    response.data.forEach(attachment => {
+                        const fileName = attachment.File_Name || attachment.file_Name || "Attachment";
+                        
+                        // Конструируем прямую ссылку на Wasabi S3 по предоставленному шаблону
+                        const s3Url = `${CONFIG.S3_BASE_URL}/${phone}/${fileName}`;
+                        
+                        const linkEl = document.createElement('a');
+                        linkEl.href = s3Url;
+                        linkEl.target = "_blank"; // Открываем строго в новой вкладке
+                        linkEl.className = "inline-flex items-center gap-2 bg-black bg-opacity-5 hover:bg-opacity-10 px-2.5 py-2 rounded border border-gray-200 transition-all self-start text-xs font-semibold text-[#008069] max-w-full mt-1";
+                        
+                        linkEl.innerHTML = `
+                            <svg class="w-3.5 h-3.5 flex-shrink-0 text-[#008069]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                            </svg>
+                            <span class="truncate max-w-[220px]" title="${fileName}">${fileName}</span>
+                        `;
+                        container.appendChild(linkEl);
+                    });
+                }
+            })
+            .catch(function(err) {
+                // Очищаем контейнер при ошибке 204
+                const container = document.getElementById(`attachments-${messageId}`);
+                if (container) container.innerHTML = ""; 
+            });
+        }
+
+        function showDiagnosticError(targetElement, contextName, errorObj, attemptedQuery) {
+            targetElement.innerHTML = `
+                <div class="p-4 m-2 bg-red-50 border border-red-200 rounded-lg text-red-700 text-xs">
+                    <p class="font-bold text-sm mb-1">⚠️ Error querying ${contextName}</p>
+                    <pre class="bg-red-100 p-2 rounded overflow-auto max-h-32 font-mono text-[10px]">${JSON.stringify(errorObj, null, 2)}</pre>
+                    <p class="font-semibold mt-2">Executed Query Parameters:</p>
+                    <pre class="bg-gray-100 p-2 rounded overflow-auto font-mono text-[10px] text-gray-600 whitespace-pre-wrap">${attemptedQuery}</pre>
+                </div>`;
+        }
+    </script>
+</body>
+</html>
