@@ -61,6 +61,84 @@
 
         let currentContactId = null;
 
+        // Карта популярных MIME-типов файлов для корректной сборки Blob
+        const MIME_MAP = {
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'gif': 'image/gif',
+            'webp': 'image/webp',
+            'svg': 'image/svg+xml',
+            'mp4': 'video/mp4',
+            'webm': 'video/webm',
+            'mov': 'video/quicktime',
+            'ogg': 'audio/ogg',
+            'opus': 'audio/ogg; codecs=opus',
+            'mp3': 'audio/mpeg',
+            'wav': 'audio/wav',
+            'm4a': 'audio/mp4',
+            'aac': 'audio/aac',
+            'amr': 'audio/amr',
+            'pdf': 'application/pdf'
+        };
+
+        function getMimeType(fileName) {
+            const ext = String(fileName).split('.').pop().toLowerCase();
+            return MIME_MAP[ext] || 'application/octet-stream';
+        }
+
+        // Глобальные хелперы для управления кастомным плеером голосовых сообщений
+        window.playAudio = function(id) {
+            const audio = document.getElementById(id);
+            const playBtn = document.getElementById('play-' + id);
+            const pauseBtn = document.getElementById('pause-' + id);
+            
+            // Ставим на паузу все остальные плееры на странице, если они играют
+            document.querySelectorAll('audio').forEach(el => {
+                if(el.id !== id) {
+                    el.pause();
+                    const otherPlay = document.getElementById('play-' + el.id);
+                    const otherPause = document.getElementById('pause-' + el.id);
+                    if(otherPlay) otherPlay.classList.remove('hidden');
+                    if(otherPause) otherPause.classList.add('hidden');
+                }
+            });
+
+            if (audio.paused) {
+                audio.play().catch(e => console.error("Audio playback blocked/failed:", e));
+                playBtn.classList.add('hidden');
+                pauseBtn.classList.remove('hidden');
+            } else {
+                audio.pause();
+                playBtn.classList.remove('hidden');
+                pauseBtn.classList.add('hidden');
+            }
+        };
+
+        window.updateProgress = function(id) {
+            const audio = document.getElementById(id);
+            const progress = document.getElementById('progress-' + id);
+            const timer = document.getElementById('timer-' + id);
+            if (audio && progress) {
+                const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+                progress.style.width = pct + '%';
+                
+                // Форматируем время
+                const mins = Math.floor(audio.currentTime / 60);
+                const secs = Math.floor(audio.currentTime % 60);
+                timer.innerText = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+            }
+        };
+
+        window.audioEnded = function(id) {
+            const playBtn = document.getElementById('play-' + id);
+            const pauseBtn = document.getElementById('pause-' + id);
+            const progress = document.getElementById('progress-' + id);
+            if (playBtn) playBtn.classList.remove('hidden');
+            if (pauseBtn) pauseBtn.classList.add('hidden');
+            if (progress) progress.style.width = '0%';
+        };
+
         function logDebug(message, type = "info") {
             const logsDiv = document.getElementById('diagnostic-logs');
             if (logsDiv) {
@@ -190,10 +268,11 @@
                                 : 'bg-[#d9fdd3] text-[#111b21] rounded-tr-none'
                         }`;
 
-                        // Текст сообщения
-                        let contentHtml = `<p class="whitespace-pre-wrap break-words leading-relaxed">${msg.Message_Body || ""}</p>`;
+                        // Текст сообщения (игнорируем стандартное слово "Image" / "Voice" если есть вложения)
+                        const messageText = msg.Message_Body || "";
+                        let contentHtml = `<p class="whitespace-pre-wrap break-words leading-relaxed">${messageText}</p>`;
                         
-                        // Асинхронный контейнер-заглушка под файлы
+                        // Асинхронный контейнер под файлы
                         contentHtml += `<div id="attachment-container-${msg.id}" class="mt-1 flex flex-col gap-1 min-w-[150px]"></div>`;
                         
                         const timeStr = msg.Created_Time ? new Date(msg.Created_Time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
@@ -207,7 +286,7 @@
                         bubbleWrapper.appendChild(bubble);
                         messageContainer.appendChild(bubbleWrapper);
 
-                        // Сразу запускаем фоновый поиск файлов для этого сообщения
+                        // Запуск фонового поиска связанных файлов в Related List
                         fetchAndRenderAttachments(msg.id);
                     });
 
@@ -219,7 +298,7 @@
                 });
         }
 
-        // 3. Поиск связанных файлов в стандартном Related List: Attachments
+        // 3. Поиск связанных файлов
         function fetchAndRenderAttachments(messageId) {
             ZOHO.CRM.API.getRelatedRecords({
                 Entity: CONFIG.MESSAGES_MODULE,
@@ -233,91 +312,111 @@
                 if (!container) return;
 
                 if (response && response.data && response.data.length > 0) {
-                    container.innerHTML = ""; // Очищаем пустоту
+                    container.innerHTML = ""; // Очищаем заглушку
                     
                     response.data.forEach((attachment, index) => {
                         const fileId = attachment.id;
                         const fileName = attachment.File_Name || attachment.file_Name || "Attachment";
-                        const attachmentFileId = `file-${messageId}-${index}`;
+                        const attachmentUniqueId = `file-${messageId}-${index}`;
                         
-                        // Показываем индикатор загрузки для конкретного файла
+                        // Показываем прелоадер для скачивания файла
                         const fileDiv = document.createElement('div');
-                        fileDiv.id = attachmentFileId;
+                        fileDiv.id = attachmentUniqueId;
                         fileDiv.className = "text-[11px] text-gray-400 italic py-1 flex items-center gap-1.5";
                         fileDiv.innerHTML = `
-                            <svg class="animate-spin h-3 w-3 text-[#008069]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <svg class="animate-spin h-3.5 w-3.5 text-[#008069]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
-                            <span>Loading file...</span>
+                            <span>Loading media file...</span>
                         `;
                         container.appendChild(fileDiv);
 
-                        // Скачиваем сам файл в браузер
-                        loadAttachmentFile(fileId, attachmentFileId, fileName);
+                        // Скачивание и приведение Blob к нужному MIME-типу
+                        loadAttachmentFile(fileId, attachmentUniqueId, fileName);
                     });
                 }
             })
             .catch(function(err) {
-                // Если файлов нет — Zoho вернет ошибку 204/NO_CONTENT.
-                // Просто убираем пустой блок-заглушку, чтобы не было лишних отступов.
+                // Если вложений нет, очищаем контейнер, чтобы не ломать отступы
                 const container = document.getElementById(`attachment-container-${messageId}`);
-                if (container) {
-                    container.innerHTML = ""; 
-                }
+                if (container) container.innerHTML = ""; 
             });
         }
 
-        // 4. Скачивание бинарного Blob и отрисовка плеера/картинки
+        // 4. Скачивание Blob и пересборка с корректным заголовком Content-Type
         function loadAttachmentFile(attachmentId, elementId, fileName) {
             ZOHO.CRM.API.getFile({ id: attachmentId })
-                .then(function(blob) {
-                    const blobUrl = URL.createObjectURL(blob);
+                .then(function(rawBlob) {
+                    // ОПРЕДЕЛЯЕМ ПРАВИЛЬНЫЙ ТИП ФАЙЛА
+                    const mimeType = getMimeType(fileName);
+                    
+                    // КРИТИЧЕСКИЙ ШАГ: Создаем новый Blob на основе старого, принудительно задав ему правильный mime-тип
+                    const typedBlob = new Blob([rawBlob], { type: mimeType });
+                    const blobUrl = URL.createObjectURL(typedBlob);
+                    
                     const container = document.getElementById(elementId);
                     if (!container) return;
 
                     const extension = String(fileName).split('.').pop().toLowerCase();
                     let html = '';
 
-                    // 1. КАРТИНКИ
+                    // 1. Отрисовка картинок
                     if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(extension)) {
-                        html = `<img src="${blobUrl}" alt="${fileName}" class="rounded-lg max-w-full my-1 max-h-60 object-cover cursor-pointer border border-gray-200" onclick="window.open('${blobUrl}', '_blank')" />`;
+                        html = `<img src="${blobUrl}" alt="${fileName}" class="rounded-lg max-w-full my-1.5 max-h-60 object-cover cursor-pointer border border-gray-200 shadow-sm" onclick="window.open('${blobUrl}', '_blank')" />`;
                     } 
-                    // 2. ВИДЕО
+                    // 2. Отрисовка видео-плеера
                     else if (['mp4', 'webm', 'ogg', 'mov', '3gp'].includes(extension)) {
                         html = `
-                            <video controls class="rounded-lg max-w-full my-1 max-h-60 border border-gray-200">
-                                <source src="${blobUrl}">
+                            <video controls class="rounded-lg max-w-full my-1.5 max-h-60 border border-gray-200 shadow-sm">
+                                <source src="${blobUrl}" type="${mimeType}">
                                 Your browser does not support the video tag.
                             </video>`;
                     } 
-                    // 3. АУДИО И ГОЛОСОВЫЕ (Perfect for Voice messages)
+                    // 3. WhatsApp-style плеер аудио и голосовых сообщений
                     else if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'opus', 'amr'].includes(extension)) {
+                        const playerID = `${elementId}-player`;
                         html = `
-                            <div class="flex items-center gap-2 bg-black bg-opacity-5 p-2 rounded-md my-1 min-w-[210px]">
-                                <audio controls class="w-full h-8">
-                                    <source src="${blobUrl}">
-                                        Your browser does not support the audio element.
-                                </audio>
+                            <div class="flex items-center gap-3 bg-[#f0f2f5] p-2.5 rounded-lg border border-gray-200 max-w-[280px] my-1 shadow-sm select-none">
+                                <button onclick="window.playAudio('${playerID}')" class="w-8 h-8 rounded-full bg-[#008069] flex items-center justify-center text-white focus:outline-none flex-shrink-0 hover:bg-[#005e4d] transition-colors">
+                                    <svg id="play-${playerID}" class="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M8 5v14l11-7z"/>
+                                    </svg>
+                                    <svg id="pause-${playerID}" class="w-4 h-4 hidden" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                                    </svg>
+                                </button>
+                                
+                                <div class="flex-1 min-w-0">
+                                    <div class="h-1 bg-gray-300 rounded-full w-full relative overflow-hidden">
+                                        <div id="progress-${playerID}" class="h-full bg-[#008069] w-0 transition-all duration-75"></div>
+                                    </div>
+                                    <div class="flex justify-between items-center mt-1 text-[10px] text-gray-500">
+                                        <span id="timer-${playerID}">0:00</span>
+                                        <span class="truncate max-w-[100px] font-medium" title="${fileName}">${fileName}</span>
+                                    </div>
+                                </div>
+                                
+                                <audio id="${playerID}" src="${blobUrl}" type="${mimeType}" ontimeupdate="window.updateProgress('${playerID}')" onended="window.audioEnded('${playerID}')"></audio>
                             </div>`;
                     } 
-                    // 4. ДОКУМЕНТЫ И ДРУГИЕ ФАЙЛЫ
+                    // 4. Обычные документы и файлы
                     else {
                         html = `
-                            <a href="${blobUrl}" download="${fileName}" class="flex items-center gap-2 bg-black bg-opacity-5 p-2 rounded-md text-[#008069] font-medium hover:underline text-xs my-1">
+                            <a href="${blobUrl}" download="${fileName}" class="flex items-center gap-2 bg-black bg-opacity-5 p-2.5 rounded-md text-[#008069] font-medium hover:underline text-xs my-1">
                                 <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                                <span class="truncate max-w-[130px]">${fileName}</span>
+                                <span class="truncate max-w-[130px]" title="${fileName}">${fileName}</span>
                             </a>`;
                     }
                     
-                    container.className = ""; // Убираем оформление лоадера
+                    container.className = ""; // Сбрасываем CSS-классы лоадера
                     container.innerHTML = html;
                 })
                 .catch(function(err) {
                     console.error("Error fetching file", err);
                     const container = document.getElementById(elementId);
                     if (container) {
-                        container.innerHTML = `<span class="text-[10px] text-red-500">Failed to load file: ${fileName}</span>`;
+                        container.innerHTML = `<span class="text-[10px] text-red-500">Error loading: ${fileName}</span>`;
                     }
                 });
         }
