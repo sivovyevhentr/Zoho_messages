@@ -26,7 +26,7 @@
             </div>
 
             <div class="border-t border-gray-200 bg-gray-50 p-2 text-xs">
-                <details class="cursor-pointer" open>
+                <details class="cursor-pointer">
                     <summary class="font-semibold text-gray-700 select-none">🛠️ System Connection Logs</summary>
                     <div class="mt-2 space-y-1 font-mono text-[10px] text-gray-600 bg-white p-2 border rounded max-h-32 overflow-y-auto" id="diagnostic-logs">
                     </div>
@@ -96,7 +96,7 @@
 
         ZOHO.embeddedApp.init();
 
-        // Поиск через стандартный API searchRecord (будет работать на ЛЮБОМ тарифе)
+        // 1. Поиск диалогов (Левая панель)
         function loadConversations(contactId) {
             const chatListDiv = document.getElementById('chats-list');
             chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">Searching conversations...</div>`;
@@ -148,6 +148,7 @@
                 });
         }
 
+        // 2. Поиск сообщений выбранного чата (Правая панель)
         function selectConversation(conversationId, name) {
             document.getElementById('active-chat-name').innerText = name || "WhatsApp Chat";
             document.getElementById('active-chat-status').innerText = "Streaming records...";
@@ -189,7 +190,11 @@
                                 : 'bg-[#d9fdd3] text-[#111b21] rounded-tr-none'
                         }`;
 
+                        // Текст сообщения
                         let contentHtml = `<p class="whitespace-pre-wrap break-words leading-relaxed">${msg.Message_Body || ""}</p>`;
+                        
+                        // Асинхронный контейнер-заглушка под файлы
+                        contentHtml += `<div id="attachment-container-${msg.id}" class="mt-1 flex flex-col gap-1 min-w-[150px]"></div>`;
                         
                         const timeStr = msg.Created_Time ? new Date(msg.Created_Time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
                         contentHtml += `
@@ -201,6 +206,9 @@
                         bubble.innerHTML = contentHtml;
                         bubbleWrapper.appendChild(bubble);
                         messageContainer.appendChild(bubbleWrapper);
+
+                        // Сразу запускаем фоновый поиск файлов для этого сообщения
+                        fetchAndRenderAttachments(msg.id);
                     });
 
                     messageContainer.scrollTop = messageContainer.scrollHeight;
@@ -208,6 +216,109 @@
                 .catch(err => {
                     logDebug(`Message Search Error: ${JSON.stringify(err)}`, "error");
                     showDiagnosticError(messageContainer, "Messages Search Feed", err, JSON.stringify(searchParams));
+                });
+        }
+
+        // 3. Поиск связанных файлов в стандартном Related List: Attachments
+        function fetchAndRenderAttachments(messageId) {
+            ZOHO.CRM.API.getRelatedRecords({
+                Entity: CONFIG.MESSAGES_MODULE,
+                RecordID: messageId,
+                RelatedList: "Attachments",
+                page: 1,
+                per_page: 5
+            })
+            .then(function(response) {
+                const container = document.getElementById(`attachment-container-${messageId}`);
+                if (!container) return;
+
+                if (response && response.data && response.data.length > 0) {
+                    container.innerHTML = ""; // Очищаем пустоту
+                    
+                    response.data.forEach((attachment, index) => {
+                        const fileId = attachment.id;
+                        const fileName = attachment.File_Name || attachment.file_Name || "Attachment";
+                        const attachmentFileId = `file-${messageId}-${index}`;
+                        
+                        // Показываем индикатор загрузки для конкретного файла
+                        const fileDiv = document.createElement('div');
+                        fileDiv.id = attachmentFileId;
+                        fileDiv.className = "text-[11px] text-gray-400 italic py-1 flex items-center gap-1.5";
+                        fileDiv.innerHTML = `
+                            <svg class="animate-spin h-3 w-3 text-[#008069]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>Loading file...</span>
+                        `;
+                        container.appendChild(fileDiv);
+
+                        // Скачиваем сам файл в браузер
+                        loadAttachmentFile(fileId, attachmentFileId, fileName);
+                    });
+                }
+            })
+            .catch(function(err) {
+                // Если файлов нет — Zoho вернет ошибку 204/NO_CONTENT.
+                // Просто убираем пустой блок-заглушку, чтобы не было лишних отступов.
+                const container = document.getElementById(`attachment-container-${messageId}`);
+                if (container) {
+                    container.innerHTML = ""; 
+                }
+            });
+        }
+
+        // 4. Скачивание бинарного Blob и отрисовка плеера/картинки
+        function loadAttachmentFile(attachmentId, elementId, fileName) {
+            ZOHO.CRM.API.getFile({ id: attachmentId })
+                .then(function(blob) {
+                    const blobUrl = URL.createObjectURL(blob);
+                    const container = document.getElementById(elementId);
+                    if (!container) return;
+
+                    const extension = String(fileName).split('.').pop().toLowerCase();
+                    let html = '';
+
+                    // 1. КАРТИНКИ
+                    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(extension)) {
+                        html = `<img src="${blobUrl}" alt="${fileName}" class="rounded-lg max-w-full my-1 max-h-60 object-cover cursor-pointer border border-gray-200" onclick="window.open('${blobUrl}', '_blank')" />`;
+                    } 
+                    // 2. ВИДЕО
+                    else if (['mp4', 'webm', 'ogg', 'mov', '3gp'].includes(extension)) {
+                        html = `
+                            <video controls class="rounded-lg max-w-full my-1 max-h-60 border border-gray-200">
+                                <source src="${blobUrl}">
+                                Your browser does not support the video tag.
+                            </video>`;
+                    } 
+                    // 3. АУДИО И ГОЛОСОВЫЕ (Perfect for Voice messages)
+                    else if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'opus', 'amr'].includes(extension)) {
+                        html = `
+                            <div class="flex items-center gap-2 bg-black bg-opacity-5 p-2 rounded-md my-1 min-w-[210px]">
+                                <audio controls class="w-full h-8">
+                                    <source src="${blobUrl}">
+                                        Your browser does not support the audio element.
+                                </audio>
+                            </div>`;
+                    } 
+                    // 4. ДОКУМЕНТЫ И ДРУГИЕ ФАЙЛЫ
+                    else {
+                        html = `
+                            <a href="${blobUrl}" download="${fileName}" class="flex items-center gap-2 bg-black bg-opacity-5 p-2 rounded-md text-[#008069] font-medium hover:underline text-xs my-1">
+                                <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                                <span class="truncate max-w-[130px]">${fileName}</span>
+                            </a>`;
+                    }
+                    
+                    container.className = ""; // Убираем оформление лоадера
+                    container.innerHTML = html;
+                })
+                .catch(function(err) {
+                    console.error("Error fetching file", err);
+                    const container = document.getElementById(elementId);
+                    if (container) {
+                        container.innerHTML = `<span class="text-[10px] text-red-500">Failed to load file: ${fileName}</span>`;
+                    }
                 });
         }
 
