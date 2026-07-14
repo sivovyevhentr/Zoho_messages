@@ -26,8 +26,8 @@
             </div>
 
             <div class="border-t border-gray-200 bg-gray-50 p-2 text-xs">
-                <details class="cursor-pointer">
-                    <summary class="font-semibold text-gray-700 select-none">🛠     System Connection Logs</summary>
+                <details class="cursor-pointer" open>
+                    <summary class="font-semibold text-gray-700 select-none">🛠️ System Connection Logs</summary>
                     <div class="mt-2 space-y-1 font-mono text-[10px] text-gray-600 bg-white p-2 border rounded max-h-32 overflow-y-auto" id="diagnostic-logs">
                     </div>
                 </details>
@@ -52,15 +52,12 @@
     </div>
 
     <script>
-        // EDIT CONFIG MANUALLY HERE IF NEEDED
+        // CONFIG - НАСТРОЙКА ИМЕН ПОЛЕЙ И МОДУЛЕЙ
         const CONFIG = {
             CONVERSATIONS_MODULE: "Conversations",         
             MESSAGES_MODULE: "conversation_messages",     
             CONTACTS_LOOKUP_IN_CONV: "Contact",            
-            CONV_LOOKUP_IN_MSG: "Conversation",
-            
-            // The exact fields to pull from the Conversations (Chats) module
-            CONV_FIELDS: "id, Name, Messager_Chat_ID, Modified_Time"
+            CONV_LOOKUP_IN_MSG: "Conversation"             
         };
 
         let currentContactId = null;
@@ -74,11 +71,11 @@
             }
         }
 
-        // Initialize Zoho Widget Environment
-        logDebug("Widget loaded. Starting Zoho Handshake...");
+        // Инициализация виджета
+        logDebug("Widget loaded. Ready for Search API...");
         
         ZOHO.embeddedApp.on("PageLoad", function(data) {
-            logDebug("Zoho handshake complete! Page context captured.", "success");
+            logDebug("Zoho handshake complete!", "success");
             
             if (data && data.EntityId) {
                 if (Array.isArray(data.EntityId) && data.EntityId.length > 0) {
@@ -91,44 +88,55 @@
                     logDebug(`Target Contact ID: ${currentContactId}`, "success");
                     loadConversations(currentContactId);
                 } else {
-                    logDebug("Error: Resolved Contact ID is empty.", "error");
+                    logDebug("Error: Contact ID empty.", "error");
                 }
             } else {
-                logDebug("Error: Context ID data missing from layout payload.", "error");
+                logDebug("Error: Missing context data.", "error");
                 document.getElementById('chats-list').innerHTML = `<div class="p-4 text-center text-red-500">Context Error</div>`;
             }
         });
 
         ZOHO.embeddedApp.init();
 
-        // Query the parent chat records (Conversations)
+        // 1. Поиск диалогов (Левая панель) через searchRecord
         function loadConversations(contactId) {
             const chatListDiv = document.getElementById('chats-list');
             chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">Searching conversations...</div>`;
             
-            // Uses CONFIG.CONV_FIELDS to dynamically include Messager_Chat_ID
-            const query = `select ${CONFIG.CONV_FIELDS} from ${CONFIG.CONVERSATIONS_MODULE} where ${CONFIG.CONTACTS_LOOKUP_IN_CONV} = '${contactId}' order by Modified_Time desc`;
-            logDebug(`Running COQL: ${query}`);
+            // Используем стандартный формат критериев Zoho (без кавычек вокруг ID)
+            const searchParams = {
+                Entity: CONFIG.CONVERSATIONS_MODULE,
+                Type: "criteria",
+                Query: `(${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`
+            };
+            logDebug(`Searching conversations: (${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`);
 
-            ZOHO.CRM.API.coql({ select_query: query })
+            ZOHO.CRM.API.searchRecord(searchParams)
                 .then(function(response) {
                     chatListDiv.innerHTML = "";
-                    if (!response || !response.data || response.data.length === 0) {
+                    
+                    // Проверка на пустой ответ или ошибку API
+                    if (!response || !response.data || response.data.length === 0 || response.status === "error") {
                         chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">No chats found for this contact.</div>`;
-                        logDebug("Query returned 0 results for this Contact.", "info");
+                        logDebug("No conversation records found.", "info");
                         return;
                     }
 
-                    logDebug(`Found ${response.data.length} chat stream(s).`, "success");
-                    response.data.forEach(chat => {
+                    logDebug(`Found ${response.data.length} chat(s). Sorting...`, "success");
+                    
+                    // Сортируем полученные диалоги по дате изменения (Modified_Time) сверху вниз (сначала новые)
+                    const sortedChats = response.data.sort((a, b) => {
+                        return new Date(b.Modified_Time || 0) - new Date(a.Modified_Time || 0);
+                    });
+
+                    sortedChats.forEach(chat => {
                         const dateStr = chat.Modified_Time ? new Date(chat.Modified_Time).toLocaleDateString() : '';
                         const chatEl = document.createElement('div');
                         chatEl.className = "flex items-center justify-between p-4 border-b border-[#f0f2f5] hover:bg-[#f0f2f5] cursor-pointer transition";
                         
-                        // Pass ID and Name when clicked
                         chatEl.onclick = () => selectConversation(chat.id, chat.Name);
                         
-                        // UI showing Nickname (Name), WhatsApp Chat ID (Messager_Chat_ID), and date modified
+                        // Отрисовываем Nickname, Номер (Messager_Chat_ID) и дату изменения
                         chatEl.innerHTML = `
                             <div class="flex-1 min-w-0 pr-2">
                                 <p class="font-bold text-[#111b21] truncate text-sm">${chat.Name || 'WhatsApp Chat'}</p>
@@ -141,33 +149,43 @@
                     });
                 })
                 .catch(err => {
-                    logDebug(`Query Error: ${JSON.stringify(err)}`, "error");
-                    showDiagnosticError(chatListDiv, "Conversations Module", err, query);
+                    logDebug(`Search Error: ${JSON.stringify(err)}`, "error");
+                    showDiagnosticError(chatListDiv, "Conversations Search", err, JSON.stringify(searchParams));
                 });
         }
 
-        // Pull corresponding message records
+        // 2. Поиск сообщений выбранного чата (Правая панель) через searchRecord
         function selectConversation(conversationId, name) {
             document.getElementById('active-chat-name').innerText = name || "WhatsApp Chat";
             document.getElementById('active-chat-status').innerText = "Streaming records...";
             const messageContainer = document.getElementById('message-container');
             messageContainer.innerHTML = `<div class="m-auto text-gray-500">Loading messages...</div>`;
 
-            const query = `select id, Name, Direction, Message_Body, Created_Time from ${CONFIG.MESSAGES_MODULE} where ${CONFIG.CONV_LOOKUP_IN_MSG} = '${conversationId}' order by Created_Time asc`;
-            logDebug(`Running Messages COQL: ${query}`);
+            const searchParams = {
+                Entity: CONFIG.MESSAGES_MODULE,
+                Type: "criteria",
+                Query: `(${CONFIG.CONV_LOOKUP_IN_MSG}:equals:${conversationId})`
+            };
+            logDebug(`Searching messages for Conversation: ${conversationId}`);
 
-            ZOHO.CRM.API.coql({ select_query: query })
+            ZOHO.CRM.API.searchRecord(searchParams)
                 .then(function(response) {
                     messageContainer.innerHTML = "";
                     document.getElementById('active-chat-status').innerText = "";
 
-                    if (!response || !response.data || response.data.length === 0) {
+                    if (!response || !response.data || response.data.length === 0 || response.status === "error") {
                         messageContainer.innerHTML = `<div class="m-auto text-gray-400">No message items found.</div>`;
                         return;
                     }
 
-                    logDebug(`Loaded ${response.data.length} message records.`, "success");
-                    response.data.forEach(msg => {
+                    logDebug(`Loaded ${response.data.length} messages. Sorting...`, "success");
+                    
+                    // Сортируем сообщения по времени создания (Created_Time) снизу вверх (старые вверху, новые внизу)
+                    const sortedMessages = response.data.sort((a, b) => {
+                        return new Date(a.Created_Time || 0) - new Date(b.Created_Time || 0);
+                    });
+
+                    sortedMessages.forEach(msg => {
                         const isIncoming = msg.Direction && String(msg.Direction).toLowerCase().includes('in'); 
                         const bubbleWrapper = document.createElement('div');
                         bubbleWrapper.className = `flex w-full ${isIncoming ? 'justify-start' : 'justify-end'}`;
@@ -196,8 +214,8 @@
                     messageContainer.scrollTop = messageContainer.scrollHeight;
                 })
                 .catch(err => {
-                    logDebug(`Message Error: ${JSON.stringify(err)}`, "error");
-                    showDiagnosticError(messageContainer, "Messages Module Feed", err, query);
+                    logDebug(`Message Search Error: ${JSON.stringify(err)}`, "error");
+                    showDiagnosticError(messageContainer, "Messages Search Feed", err, JSON.stringify(searchParams));
                 });
         }
 
@@ -206,7 +224,7 @@
                 <div class="p-4 m-2 bg-red-50 border border-red-200 rounded-lg text-red-700 text-xs">
                     <p class="font-bold text-sm mb-1">⚠️ Error querying ${contextName}</p>
                     <pre class="bg-red-100 p-2 rounded overflow-auto max-h-32 font-mono text-[10px]">${JSON.stringify(errorObj, null, 2)}</pre>
-                    <p class="font-semibold mt-2">Executed Query:</p>
+                    <p class="font-semibold mt-2">Executed Query Parameters:</p>
                     <pre class="bg-gray-100 p-2 rounded overflow-auto font-mono text-[10px] text-gray-600 whitespace-pre-wrap">${attemptedQuery}</pre>
                 </div>`;
         }
