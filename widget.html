@@ -52,7 +52,6 @@
     </div>
 
     <script>
-        // CONFIG - НАСТРОЙКА ИМЕН ПОЛЕЙ И МОДУЛЕЙ
         const CONFIG = {
             CONVERSATIONS_MODULE: "Conversations",         
             MESSAGES_MODULE: "conversation_messages",     
@@ -71,7 +70,6 @@
             }
         }
 
-        // Инициализация виджета
         logDebug("Widget loaded. Ready for Search API...");
         
         ZOHO.embeddedApp.on("PageLoad", function(data) {
@@ -98,24 +96,22 @@
 
         ZOHO.embeddedApp.init();
 
-        // 1. Поиск диалогов (Левая панель) через searchRecord
+        // Поиск через стандартный API searchRecord (будет работать на ЛЮБОМ тарифе)
         function loadConversations(contactId) {
             const chatListDiv = document.getElementById('chats-list');
             chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">Searching conversations...</div>`;
             
-            // Используем стандартный формат критериев Zoho (без кавычек вокруг ID)
             const searchParams = {
                 Entity: CONFIG.CONVERSATIONS_MODULE,
                 Type: "criteria",
                 Query: `(${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`
             };
-            logDebug(`Searching conversations: (${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`);
+            logDebug(`Searching conversations using Search API: (${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`);
 
             ZOHO.CRM.API.searchRecord(searchParams)
                 .then(function(response) {
                     chatListDiv.innerHTML = "";
                     
-                    // Проверка на пустой ответ или ошибку API
                     if (!response || !response.data || response.data.length === 0 || response.status === "error") {
                         chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">No chats found for this contact.</div>`;
                         logDebug("No conversation records found.", "info");
@@ -124,7 +120,6 @@
 
                     logDebug(`Found ${response.data.length} chat(s). Sorting...`, "success");
                     
-                    // Сортируем полученные диалоги по дате изменения (Modified_Time) сверху вниз (сначала новые)
                     const sortedChats = response.data.sort((a, b) => {
                         return new Date(b.Modified_Time || 0) - new Date(a.Modified_Time || 0);
                     });
@@ -136,7 +131,6 @@
                         
                         chatEl.onclick = () => selectConversation(chat.id, chat.Name);
                         
-                        // Отрисовываем Nickname, Номер (Messager_Chat_ID) и дату изменения
                         chatEl.innerHTML = `
                             <div class="flex-1 min-w-0 pr-2">
                                 <p class="font-bold text-[#111b21] truncate text-sm">${chat.Name || 'WhatsApp Chat'}</p>
@@ -154,7 +148,6 @@
                 });
         }
 
-        // 2. Поиск сообщений выбранного чата (Правая панель) через searchRecord
         function selectConversation(conversationId, name) {
             document.getElementById('active-chat-name').innerText = name || "WhatsApp Chat";
             document.getElementById('active-chat-status').innerText = "Streaming records...";
@@ -180,7 +173,6 @@
 
                     logDebug(`Loaded ${response.data.length} messages. Sorting...`, "success");
                     
-                    // Сортируем сообщения по времени создания (Created_Time) снизу вверх (старые вверху, новые внизу)
                     const sortedMessages = response.data.sort((a, b) => {
                         return new Date(a.Created_Time || 0) - new Date(b.Created_Time || 0);
                     });
