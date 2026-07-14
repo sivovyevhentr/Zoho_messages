@@ -54,10 +54,10 @@
     <script>
         // VERIFIED FROM YOUR FIELD API SCREENSHOTS
         const CONFIG = {
-            CONVERSATIONS_MODULE: "Conversations",         // From image_899388.png
-            MESSAGES_MODULE: "conversation_messages",     // From image_899388.png
-            CONTACTS_LOOKUP_IN_CONV: "Contact",            // From image_8a0ae8.png
-            CONV_LOOKUP_IN_MSG: "Conversation"             // From image_8a0b0a.png
+            CONVERSATIONS_MODULE: "Conversations",         
+            MESSAGES_MODULE: "conversation_messages",     
+            CONTACTS_LOOKUP_IN_CONV: "Contact",            
+            CONV_LOOKUP_IN_MSG: "Conversation"             
         };
 
         let currentContactId = null;
@@ -76,10 +76,21 @@
         
         ZOHO.embeddedApp.on("PageLoad", function(data) {
             logDebug("Zoho handshake complete! Page context captured.", "success");
-            if (data && data.EntityId && data.EntityId.length > 0) {
-                currentContactId = data.EntityId[0];
-                logDebug(`Target Contact ID: ${currentContactId}`);
-                loadConversations(currentContactId);
+            
+            if (data && data.EntityId) {
+                // BUG FIX: Correctly unpack the full ID whether array or string
+                if (Array.isArray(data.EntityId) && data.EntityId.length > 0) {
+                    currentContactId = data.EntityId[0];
+                } else if (typeof data.EntityId === "string") {
+                    currentContactId = data.EntityId;
+                }
+
+                if (currentContactId) {
+                    logDebug(`Target Contact ID: ${currentContactId}`, "success");
+                    loadConversations(currentContactId);
+                } else {
+                    logDebug("Error: Resolved Contact ID is empty.", "error");
+                }
             } else {
                 logDebug("Error: Context ID data missing from layout payload.", "error");
                 document.getElementById('chats-list').innerHTML = `<div class="p-4 text-center text-red-500">Context Error</div>`;
@@ -143,13 +154,12 @@
                     document.getElementById('active-chat-status').innerText = "";
 
                     if (!response || !response.data || response.data.length === 0) {
-                        messageContainer.innerHTML = `<div class="m-auto text-gray-400">No message items found in this object card.</div>`;
+                        messageContainer.innerHTML = `<div class="m-auto text-gray-400">No message items found.</div>`;
                         return;
                     }
 
                     logDebug(`Loaded ${response.data.length} message records.`, "success");
                     response.data.forEach(msg => {
-                        // Safe check for direction values (handles IN, Inbound, Incoming, etc.)
                         const isIncoming = msg.Direction && String(msg.Direction).toLowerCase().includes('in'); 
                         const bubbleWrapper = document.createElement('div');
                         bubbleWrapper.className = `flex w-full ${isIncoming ? 'justify-start' : 'justify-end'}`;
