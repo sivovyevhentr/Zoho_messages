@@ -20,8 +20,17 @@
             <div class="bg-[#f0f2f5] p-4 flex items-center justify-between border-b border-[#e9edef]">
                 <h2 class="text-lg font-bold text-[#008069]">WhatsApp Chats</h2>
             </div>
+            
             <div id="chats-list" class="flex-1 overflow-y-auto custom-scrollbar bg-white">
-                <div class="p-4 text-center text-gray-500">Loading chats...</div>
+                <div class="p-4 text-center text-gray-500" id="loading-spinner">Connecting to Zoho...</div>
+            </div>
+
+            <div class="border-t border-gray-200 bg-gray-50 p-2 text-xs">
+                <details class="cursor-pointer">
+                    <summary class="font-semibold text-gray-700 select-none">🛠️ System Logs</summary>
+                    <div class="mt-2 space-y-1 font-mono text-[10px] text-gray-600 bg-white p-2 border rounded max-h-32 overflow-y-auto" id="diagnostic-logs">
+                    </div>
+                </details>
             </div>
         </div>
 
@@ -43,40 +52,60 @@
     </div>
 
     <script>
-        // MATCHED TO YOUR CRM API NAMES
+        // EXACT API NAMES FROM YOUR CRM SCREENSHOTS
         const CONFIG = {
-            CONVERSATIONS_MODULE: "CustomModule1",      // Conversations
-            MESSAGES_MODULE: "CustomModule2",           // Conersation Messages
-            CONTACTS_LOOKUP_IN_CONV: "Contact",         // Field linking CustomModule1 -> Contacts
-            CONV_LOOKUP_IN_MSG: "Conversation_link"     // Field linking CustomModule2 -> CustomModule1
+            CONVERSATIONS_MODULE: "Conversations",         // Displayed as "Conversations"
+            MESSAGES_MODULE: "conversation_messages",     // Displayed as "Conersation Messages"
+            CONTACTS_LOOKUP_IN_CONV: "Contact",            // Default lookup field
+            CONV_LOOKUP_IN_MSG: "Conversation_link"        // Default lookup field
         };
 
         let currentContactId = null;
 
-        // Initialize Zoho Embedded App
+        function logDebug(message, type = "info") {
+            const logsDiv = document.getElementById('diagnostic-logs');
+            if (logsDiv) {
+                const color = type === "error" ? "text-red-600 font-bold" : type === "success" ? "text-green-600 font-semibold" : "text-gray-500";
+                logsDiv.innerHTML += `<div class="${color}">[${new Date().toLocaleTimeString()}] ${message}</div>`;
+                logsDiv.scrollTop = logsDiv.scrollHeight;
+            }
+            console.log(`[Diagnostic] ${message}`);
+        }
+
+        // Initialize Embedded SDK
+        logDebug("Initializing Zoho SDK...");
         ZOHO.embeddedApp.on("PageLoad", function(data) {
+            logDebug("PageLoad event successfully intercepted!", "success");
             if (data && data.EntityId && data.EntityId.length > 0) {
                 currentContactId = data.EntityId[0];
+                logDebug(`Active Contact ID found: ${currentContactId}`);
+                
+                // Fetch chats for the loaded contact
                 loadConversations(currentContactId);
             } else {
-                document.getElementById('chats-list').innerHTML = `<div class="p-4 text-red-500">Could not identify Contact context ID.</div>`;
+                logDebug("Could not read Contact ID context from page load payload.", "error");
+                document.getElementById('chats-list').innerHTML = `<div class="p-4 text-center text-red-500 font-medium">Failed to identify active Contact.</div>`;
             }
         });
 
         ZOHO.embeddedApp.init();
 
-        // 1. Fetch all Conversations related to the current Contact
+        // Load the chat sessions linked to the Contact
         function loadConversations(contactId) {
             const chatListDiv = document.getElementById('chats-list');
+            chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">Loading chats...</div>`;
             
-            // Build the COQL query using updated API names
-            const query = `select id, Name, Modified_Time from ${CONFIG.CONVERSATIONS_MODULE} where ${CONFIG.CONTACTS_LOOKUP_IN_CONV} = ${contactId} order by Modified_Time desc`;
-            
+            // Query using actual API Name: "Conversations"
+            const query = `select id, Name, Modified_Time from ${CONFIG.CONVERSATIONS_MODULE} where ${CONFIG.CONTACTS_LOOKUP_IN_CONV} = '${contactId}' order by Modified_Time desc`;
+            logDebug(`Requesting: ${query}`);
+
             ZOHO.CRM.API.coql({ select_query: query })
                 .then(function(response) {
+                    logDebug("Successfully retrieved conversation records from Zoho.", "success");
                     chatListDiv.innerHTML = "";
+                    
                     if (!response || !response.data || response.data.length === 0) {
-                        chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">No active conversations found for this contact.</div>`;
+                        chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">No chats linked to this contact.</div>`;
                         return;
                     }
 
@@ -96,28 +125,37 @@
                     });
                 })
                 .catch(err => {
-                    console.error("Error loading conversations", err);
-                    showDiagnosticError(chatListDiv, "Conversations (CustomModule1)", err, query);
+                    logDebug(`Query Error: ${JSON.stringify(err)}`, "error");
+                    
+                    // Fallback helper in case lookup name varies (e.g. Contact_Name)
+                    if (CONFIG.CONTACTS_LOOKUP_IN_CONV === "Contact") {
+                        logDebug("Retrying with Contact fallback lookup field...", "info");
+                        CONFIG.CONTACTS_LOOKUP_IN_CONV = "Contact_Name"; 
+                        loadConversations(contactId);
+                    } else {
+                        showDiagnosticError(chatListDiv, "Conversations", err, query);
+                    }
                 });
         }
 
-        // 2. Fetch and render messages for the active conversation
+        // Pull and sort individual messages
         function selectConversation(conversationId, name) {
             document.getElementById('active-chat-name').innerText = name;
             document.getElementById('active-chat-status').innerText = "Retrieving chat records...";
             const messageContainer = document.getElementById('message-container');
             messageContainer.innerHTML = `<div class="m-auto text-gray-500">Retrieving messages...</div>`;
 
-            // Query messages
-            const query = `select id, Message_ID, Direction, Message_Body, Created_Time from ${CONFIG.MESSAGES_MODULE} where ${CONFIG.CONV_LOOKUP_IN_MSG} = ${conversationId} order by Created_Time asc`;
-            
+            // Query using actual API Name: "conversation_messages"
+            const query = `select id, Message_ID, Direction, Message_Body, Created_Time from ${CONFIG.MESSAGES_MODULE} where ${CONFIG.CONV_LOOKUP_IN_MSG} = '${conversationId}' order by Created_Time asc`;
+            logDebug(`Querying messages: ${query}`);
+
             ZOHO.CRM.API.coql({ select_query: query })
                 .then(function(response) {
                     messageContainer.innerHTML = "";
                     document.getElementById('active-chat-status').innerText = "";
 
                     if (!response || !response.data || response.data.length === 0) {
-                        messageContainer.innerHTML = `<div class="m-auto text-gray-400">No messages in this chat.</div>`;
+                        messageContainer.innerHTML = `<div class="m-auto text-gray-400">No messages found in this chat.</div>`;
                         return;
                     }
 
@@ -147,23 +185,29 @@
                         messageContainer.appendChild(bubbleWrapper);
                     });
 
+                    // Auto-scroll message layout container to the newest message
                     messageContainer.scrollTop = messageContainer.scrollHeight;
                 })
                 .catch(err => {
-                    console.error("Error loading messages", err);
-                    showDiagnosticError(messageContainer, "Messages (CustomModule2)", err, query);
+                    logDebug(`Message error: ${JSON.stringify(err)}`, "error");
+                    
+                    // Fallback helper in case lookup name varies (e.g. Conversation_link vs Conversation_Link)
+                    if (CONFIG.CONV_LOOKUP_IN_MSG === "Conversation_link") {
+                        logDebug("Retrying with Conversation_Link lookup capitalization fallback...", "info");
+                        CONFIG.CONV_LOOKUP_IN_MSG = "Conversation_Link";
+                        selectConversation(conversationId, name);
+                    } else {
+                        showDiagnosticError(messageContainer, "Messages Feed", err, query);
+                    }
                 });
         }
 
-        // Helper to output visual errors in case of API name mismatches
         function showDiagnosticError(targetElement, contextName, errorObj, attemptedQuery) {
             targetElement.innerHTML = `
                 <div class="p-4 m-2 bg-red-50 border border-red-200 rounded-lg text-red-700 text-xs">
-                    <p class="font-bold text-sm mb-1">⚠️ API Error in ${contextName}</p>
-                    <p class="mb-2">This is usually caused by a field API Name mismatch in Zoho CRM.</p>
-                    <p class="font-semibold mt-2">Error Details:</p>
+                    <p class="font-bold text-sm mb-1">⚠️ Query Error in ${contextName}</p>
                     <pre class="bg-red-100 p-2 rounded overflow-auto max-h-32 font-mono text-[10px]">${JSON.stringify(errorObj, null, 2)}</pre>
-                    <p class="font-semibold mt-2">Attempted Query:</p>
+                    <p class="font-semibold mt-2">Executed Query:</p>
                     <pre class="bg-gray-100 p-2 rounded overflow-auto font-mono text-[10px] text-gray-600 whitespace-pre-wrap">${attemptedQuery}</pre>
                 </div>`;
         }
