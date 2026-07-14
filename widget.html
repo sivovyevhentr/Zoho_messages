@@ -26,8 +26,8 @@
             </div>
 
             <div class="border-t border-gray-200 bg-gray-50 p-2 text-xs">
-                <details class="cursor-pointer" open>
-                    <summary class="font-semibold text-gray-700 select-none">🛠️ System Connection Logs</summary>
+                <details class="cursor-pointer">
+                    <summary class="font-semibold text-gray-700 select-none">🛠     System Connection Logs</summary>
                     <div class="mt-2 space-y-1 font-mono text-[10px] text-gray-600 bg-white p-2 border rounded max-h-32 overflow-y-auto" id="diagnostic-logs">
                     </div>
                 </details>
@@ -52,12 +52,15 @@
     </div>
 
     <script>
-        // VERIFIED FROM YOUR FIELD API SCREENSHOTS
+        // EDIT CONFIG MANUALLY HERE IF NEEDED
         const CONFIG = {
             CONVERSATIONS_MODULE: "Conversations",         
             MESSAGES_MODULE: "conversation_messages",     
             CONTACTS_LOOKUP_IN_CONV: "Contact",            
-            CONV_LOOKUP_IN_MSG: "Conversation"             
+            CONV_LOOKUP_IN_MSG: "Conversation",
+            
+            // The exact fields to pull from the Conversations (Chats) module
+            CONV_FIELDS: "id, Name, Messager_Chat_ID, Modified_Time"
         };
 
         let currentContactId = null;
@@ -78,7 +81,6 @@
             logDebug("Zoho handshake complete! Page context captured.", "success");
             
             if (data && data.EntityId) {
-                // BUG FIX: Correctly unpack the full ID whether array or string
                 if (Array.isArray(data.EntityId) && data.EntityId.length > 0) {
                     currentContactId = data.EntityId[0];
                 } else if (typeof data.EntityId === "string") {
@@ -99,12 +101,13 @@
 
         ZOHO.embeddedApp.init();
 
-        // Query the parent chat records
+        // Query the parent chat records (Conversations)
         function loadConversations(contactId) {
             const chatListDiv = document.getElementById('chats-list');
             chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">Searching conversations...</div>`;
             
-            const query = `select id, Name, Modified_Time from ${CONFIG.CONVERSATIONS_MODULE} where ${CONFIG.CONTACTS_LOOKUP_IN_CONV} = '${contactId}' order by Modified_Time desc`;
+            // Uses CONFIG.CONV_FIELDS to dynamically include Messager_Chat_ID
+            const query = `select ${CONFIG.CONV_FIELDS} from ${CONFIG.CONVERSATIONS_MODULE} where ${CONFIG.CONTACTS_LOOKUP_IN_CONV} = '${contactId}' order by Modified_Time desc`;
             logDebug(`Running COQL: ${query}`);
 
             ZOHO.CRM.API.coql({ select_query: query })
@@ -121,13 +124,18 @@
                         const dateStr = chat.Modified_Time ? new Date(chat.Modified_Time).toLocaleDateString() : '';
                         const chatEl = document.createElement('div');
                         chatEl.className = "flex items-center justify-between p-4 border-b border-[#f0f2f5] hover:bg-[#f0f2f5] cursor-pointer transition";
+                        
+                        // Pass ID and Name when clicked
                         chatEl.onclick = () => selectConversation(chat.id, chat.Name);
+                        
+                        // UI showing Nickname (Name), WhatsApp Chat ID (Messager_Chat_ID), and date modified
                         chatEl.innerHTML = `
-                            <div class="flex-1 min-w-0">
-                                <p class="font-medium text-[#111b21] truncate">${chat.Name || 'WhatsApp Chat'}</p>
-                                <p class="text-[10px] text-gray-400">ID: ${chat.id}</p>
+                            <div class="flex-1 min-w-0 pr-2">
+                                <p class="font-bold text-[#111b21] truncate text-sm">${chat.Name || 'WhatsApp Chat'}</p>
+                                <p class="text-[11px] text-[#008069] truncate font-medium mt-0.5">${chat.Messager_Chat_ID || 'No Chat ID'}</p>
+                                <p class="text-[9px] text-gray-400 truncate">ID: ${chat.id}</p>
                             </div>
-                            <span class="text-xs text-gray-400 ml-2 whitespace-nowrap">${dateStr}</span>
+                            <span class="text-[11px] text-gray-400 self-start whitespace-nowrap mt-1">${dateStr}</span>
                         `;
                         chatListDiv.appendChild(chatEl);
                     });
