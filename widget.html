@@ -10,17 +10,20 @@
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #bababa; border-radius: 3px; }
+        .media-img { max-width: 280px; max-height: 320px; border-radius: 6px; cursor: zoom-in; object-fit: cover; background: #e9edef; }
+        .media-video { max-width: 320px; max-height: 360px; border-radius: 6px; background: #000; }
+        .media-audio { width: 260px; max-width: 100%; }
     </style>
 </head>
 <body class="bg-[#f0f2f5] h-screen flex flex-col font-sans text-[#111b21] overflow-hidden">
 
     <div class="flex flex-1 h-full w-full bg-[#eae6df] overflow-hidden">
-        
+
         <div class="w-1/3 bg-white border-r border-[#e9edef] flex flex-col h-full">
             <div class="bg-[#f0f2f5] p-4 flex items-center justify-between border-b border-[#e9edef]">
                 <h2 class="text-lg font-bold text-[#008069]">WhatsApp Chats</h2>
             </div>
-            
+
             <div id="chats-list" class="flex-1 overflow-y-auto custom-scrollbar bg-white">
                 <div class="p-4 text-center text-gray-500" id="loading-spinner">Connecting to Zoho CRM...</div>
             </div>
@@ -35,7 +38,7 @@
         </div>
 
         <div class="w-2/3 flex flex-col h-full bg-[#efeae2] relative" style="background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-repeat: repeat; opacity: 0.99;">
-            
+
             <div class="bg-[#f0f2f5] px-4 py-3 flex items-center border-b border-[#e9edef] z-10 w-full">
                 <div class="ml-2">
                     <p id="active-chat-name" class="font-semibold text-gray-800">Select a conversation to start reading</p>
@@ -53,62 +56,89 @@
 
     <script>
         const CONFIG = {
-            CONVERSATIONS_MODULE: "Conversations",         
-            MESSAGES_MODULE: "conversation_messages",     
-            CONTACTS_LOOKUP_IN_CONV: "Contact",            
+            CONVERSATIONS_MODULE: "Conversations",
+            MESSAGES_MODULE: "conversation_messages",
+            // Lookup-поле в Conversations для модуля, где открыт виджет (Contacts или Leads)
+            LOOKUP_IN_CONV: { Contacts: "Contact", Leads: "Lead" },
             CONV_LOOKUP_IN_MSG: "Conversation",
-            
+            PAGE_SIZE: 200,
+            MAX_PAGES: 15,
+            ATTACHMENT_REQUESTS_AT_ONCE: 4,
+
             // Настройки Wasabi S3
             S3_BASE_URL: "https://s3.eu-central-1.wasabisys.com/in-files",
             S3_FOLDER: "8613600474325" // Статическая папка вашего WhatsApp-канала
         };
 
-        let currentContactId = null;
+        const MEDIA_TYPES = {
+            image: ["jpg", "jpeg", "png", "webp", "gif"],
+            video: ["mp4", "3gp", "mov", "webm", "m4v"],
+            audio: ["oga", "ogg", "opus", "mp3", "m4a", "aac", "amr", "wav"]
+        };
+        // Тексты-заглушки, которые Make пишет вместо подписи; при показанном файле их не дублируем
+        const PLACEHOLDER_BODIES = ["image", "video", "voice", "audio", "document", "sticker", "file"];
+
+        let currentRecordId = null;
+        let currentModule = "Contacts";
         let handshakeCompleted = false;
+        let activeConversationId = null;
 
         // Вспомогательная функция для форматирования даты в dd.mm.yyyy hh:mm:ss
         function formatFullDateTime(dateTimeStr) {
             if (!dateTimeStr) return '';
             const d = new Date(dateTimeStr);
             if (isNaN(d.getTime())) return '';
-            
+
             const day = String(d.getDate()).padStart(2, '0');
             const month = String(d.getMonth() + 1).padStart(2, '0');
             const year = d.getFullYear();
-            
+
             const hours = String(d.getHours()).padStart(2, '0');
             const minutes = String(d.getMinutes()).padStart(2, '0');
             const seconds = String(d.getSeconds()).padStart(2, '0');
-            
+
             return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`;
+        }
+
+        // Текст из CRM выводим как текст, а не как HTML
+        function escapeHtml(value) {
+            return String(value == null ? "" : value)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
         }
 
         function logDebug(message, type = "info") {
             const logsDiv = document.getElementById('diagnostic-logs');
             if (logsDiv) {
                 const color = type === "error" ? "text-red-600 font-bold" : type === "success" ? "text-green-600 font-semibold" : "text-gray-500";
-                logsDiv.innerHTML += `<div class="${color}">[${new Date().toLocaleTimeString()}] ${message}</div>`;
+                logsDiv.innerHTML += `<div class="${color}">[${new Date().toLocaleTimeString()}] ${escapeHtml(message)}</div>`;
                 logsDiv.scrollTop = logsDiv.scrollHeight;
             }
         }
 
-        function initializeWidget(entityId) {
+        function initializeWidget(entityId, entityModule) {
             if (handshakeCompleted) return;
             handshakeCompleted = true;
-            currentContactId = entityId;
-            logDebug(`Target Contact ID Resolved: ${currentContactId}`, "success");
-            loadConversations(currentContactId);
+            currentRecordId = entityId;
+            if (entityModule && CONFIG.LOOKUP_IN_CONV[entityModule]) {
+                currentModule = entityModule;
+            }
+            logDebug(`Target ${currentModule} ID Resolved: ${currentRecordId}`, "success");
+            loadConversations(currentRecordId);
         }
 
         logDebug("Widget loaded. Starting Zoho Handshake...");
-        
+
         // Сценарий 1: Стандартное событие PageLoad
         ZOHO.embeddedApp.on("PageLoad", function(data) {
             logDebug("Zoho PageLoad event triggered.");
             if (data && data.EntityId) {
                 let id = Array.isArray(data.EntityId) ? data.EntityId[0] : data.EntityId;
                 if (id) {
-                    initializeWidget(id);
+                    initializeWidget(id, data.Entity);
                 }
             }
         });
@@ -123,7 +153,7 @@
                     .then(function(data) {
                         if (data && data.recordId) {
                             logDebug("Fallback successful! Retrieved ID via current page info.", "success");
-                            initializeWidget(data.recordId);
+                            initializeWidget(data.recordId, data.entity);
                         } else {
                             logDebug("Fallback failed: Page info context is empty.", "error");
                         }
@@ -134,31 +164,51 @@
             }
         }, 1200);
 
+        // Поиск с постраничной загрузкой: Zoho отдаёт максимум 200 записей за запрос
+        async function searchAllPages(entity, query) {
+            const records = [];
+            for (let page = 1; page <= CONFIG.MAX_PAGES; page++) {
+                const response = await ZOHO.CRM.API.searchRecord({
+                    Entity: entity,
+                    Type: "criteria",
+                    Query: query,
+                    page: page,
+                    per_page: CONFIG.PAGE_SIZE
+                });
+                if (!response || response.status === "error") {
+                    if (page === 1) throw response;
+                    break;
+                }
+                if (!response.data || response.data.length === 0) break;
+                records.push(...response.data);
+                const more = response.info && response.info.more_records;
+                if (!more) break;
+            }
+            return records;
+        }
+
         // 1. Поиск диалогов (Левая панель)
-        function loadConversations(contactId) {
+        function loadConversations(recordId) {
             const chatListDiv = document.getElementById('chats-list');
             chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">Searching conversations...</div>`;
-            
-            const searchParams = {
-                Entity: CONFIG.CONVERSATIONS_MODULE,
-                Type: "criteria",
-                Query: `(${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`
-            };
-            logDebug(`Searching conversations: (${CONFIG.CONTACTS_LOOKUP_IN_CONV}:equals:${contactId})`);
 
-            ZOHO.CRM.API.searchRecord(searchParams)
-                .then(function(response) {
+            const lookupField = CONFIG.LOOKUP_IN_CONV[currentModule];
+            const query = `(${lookupField}:equals:${recordId})`;
+            logDebug(`Searching conversations: ${query}`);
+
+            searchAllPages(CONFIG.CONVERSATIONS_MODULE, query)
+                .then(function(chats) {
                     chatListDiv.innerHTML = "";
-                    
-                    if (!response || !response.data || response.data.length === 0 || response.status === "error") {
-                        chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">No chats found for this contact.</div>`;
+
+                    if (chats.length === 0) {
+                        chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">No chats found for this record.</div>`;
                         logDebug("No conversation records found.", "info");
                         return;
                     }
 
-                    logDebug(`Found ${response.data.length} chat(s). Sorting...`, "success");
-                    
-                    const sortedChats = response.data.sort((a, b) => {
+                    logDebug(`Found ${chats.length} chat(s). Sorting...`, "success");
+
+                    const sortedChats = chats.sort((a, b) => {
                         return new Date(b.Modified_Time || 0) - new Date(a.Modified_Time || 0);
                     });
 
@@ -166,75 +216,82 @@
                         const dateStr = chat.Modified_Time ? new Date(chat.Modified_Time).toLocaleDateString() : '';
                         const chatEl = document.createElement('div');
                         chatEl.className = "flex items-center justify-between p-4 border-b border-[#f0f2f5] hover:bg-[#f0f2f5] cursor-pointer transition";
-                        
+
                         chatEl.onclick = () => selectConversation(chat.id, chat.Name);
-                        
+
                         chatEl.innerHTML = `
                             <div class="flex-1 min-w-0 pr-2">
-                                <p class="font-bold text-[#111b21] truncate text-sm">${chat.Name || 'WhatsApp Chat'}</p>
-                                <p class="text-[11px] text-[#008069] truncate font-medium mt-0.5">${chat.Messager_Chat_ID || 'No Chat ID'}</p>
-                                <p class="text-[9px] text-gray-400 truncate">ID: ${chat.id}</p>
+                                <p class="font-bold text-[#111b21] truncate text-sm">${escapeHtml(chat.Name || 'WhatsApp Chat')}</p>
+                                <p class="text-[11px] text-[#008069] truncate font-medium mt-0.5">${escapeHtml(chat.Messager_Chat_ID || 'No Chat ID')}</p>
+                                <p class="text-[9px] text-gray-400 truncate">ID: ${escapeHtml(chat.id)}</p>
                             </div>
                             <span class="text-[11px] text-gray-400 self-start whitespace-nowrap mt-1">${dateStr}</span>
                         `;
                         chatListDiv.appendChild(chatEl);
                     });
+
+                    // Если чат один, сразу открываем его
+                    if (sortedChats.length === 1) {
+                        selectConversation(sortedChats[0].id, sortedChats[0].Name);
+                    }
                 })
                 .catch(err => {
                     logDebug(`Search Error: ${JSON.stringify(err)}`, "error");
-                    showDiagnosticError(chatListDiv, "Conversations Search", err, JSON.stringify(searchParams));
+                    showDiagnosticError(chatListDiv, "Conversations Search", err, query);
                 });
         }
 
         // 2. Поиск сообщений выбранного чата (Правая панель)
         function selectConversation(conversationId, name) {
+            activeConversationId = conversationId;
+            attachmentObserver.disconnect();
+            attachmentQueue.length = 0;
+
             document.getElementById('active-chat-name').innerText = name || "WhatsApp Chat";
             document.getElementById('active-chat-status').innerText = "Streaming records...";
             const messageContainer = document.getElementById('message-container');
             messageContainer.innerHTML = `<div class="m-auto text-gray-500">Loading messages...</div>`;
 
-            const searchParams = {
-                Entity: CONFIG.MESSAGES_MODULE,
-                Type: "criteria",
-                Query: `(${CONFIG.CONV_LOOKUP_IN_MSG}:equals:${conversationId})`
-            };
+            const query = `(${CONFIG.CONV_LOOKUP_IN_MSG}:equals:${conversationId})`;
             logDebug(`Searching messages for Conversation ID: ${conversationId}`);
 
-            ZOHO.CRM.API.searchRecord(searchParams)
-                .then(function(response) {
+            searchAllPages(CONFIG.MESSAGES_MODULE, query)
+                .then(function(messages) {
+                    if (activeConversationId !== conversationId) return;
                     messageContainer.innerHTML = "";
-                    document.getElementById('active-chat-status').innerText = "";
+                    document.getElementById('active-chat-status').innerText = messages.length ? `${messages.length} messages` : "";
 
-                    if (!response || !response.data || response.data.length === 0 || response.status === "error") {
+                    if (messages.length === 0) {
                         messageContainer.innerHTML = `<div class="m-auto text-gray-400">No message items found.</div>`;
                         return;
                     }
 
-                    logDebug(`Loaded ${response.data.length} messages. Sorting...`, "success");
-                    
-                    const sortedMessages = response.data.sort((a, b) => {
+                    logDebug(`Loaded ${messages.length} messages. Sorting...`, "success");
+
+                    const sortedMessages = messages.sort((a, b) => {
                         return new Date(a.Created_Time || 0) - new Date(b.Created_Time || 0);
                     });
 
                     sortedMessages.forEach(msg => {
-                        const isIncoming = msg.Direction && String(msg.Direction).toLowerCase().includes('in'); 
+                        const isIncoming = msg.Direction && String(msg.Direction).toLowerCase().includes('in');
                         const bubbleWrapper = document.createElement('div');
                         bubbleWrapper.className = `flex w-full ${isIncoming ? 'justify-start' : 'justify-end'}`;
 
                         const bubble = document.createElement('div');
                         bubble.className = `max-w-[70%] rounded-lg px-3 py-2 shadow-sm text-sm relative flex flex-col ${
-                            isIncoming 
-                                ? 'bg-white text-[#111b21] rounded-tl-none' 
+                            isIncoming
+                                ? 'bg-white text-[#111b21] rounded-tl-none'
                                 : 'bg-[#d9fdd3] text-[#111b21] rounded-tr-none'
                         }`;
 
+                        // Контейнер под фото, видео, голосовые и файлы (заполняется, когда сообщение видно)
+                        let contentHtml = `<div id="attachments-${msg.id}" class="flex flex-col gap-1.5 w-full"></div>`;
+
                         // Текст сообщения
                         const messageText = msg.Message_Body || "";
-                        let contentHtml = `<p class="whitespace-pre-wrap break-words leading-relaxed">${messageText}</p>`;
-                        
-                        // Контейнер под ссылки на файлы
-                        contentHtml += `<div id="attachments-${msg.id}" class="mt-2 flex flex-col gap-1.5 w-full"></div>`;
-                        
+                        const isPlaceholder = PLACEHOLDER_BODIES.includes(messageText.trim().toLowerCase());
+                        contentHtml += `<p id="text-${msg.id}" class="whitespace-pre-wrap break-words leading-relaxed" data-placeholder="${isPlaceholder}">${escapeHtml(messageText)}</p>`;
+
                         // Получаем полную дату dd.mm.yyyy hh:mm:ss вместо стандартного формата времени
                         const fullDateTimeStr = formatFullDateTime(msg.Created_Time);
                         contentHtml += `
@@ -244,72 +301,193 @@
                         `;
 
                         bubble.innerHTML = contentHtml;
+                        bubble.dataset.messageId = msg.id;
                         bubbleWrapper.appendChild(bubble);
                         messageContainer.appendChild(bubbleWrapper);
 
-                        // Поиск связанных файлов
-                        renderAttachmentLinks(msg.id);
+                        // Вложения грузим только для сообщений на экране
+                        attachmentObserver.observe(bubble);
                     });
 
                     messageContainer.scrollTop = messageContainer.scrollHeight;
                 })
                 .catch(err => {
                     logDebug(`Message Search Error: ${JSON.stringify(err)}`, "error");
-                    showDiagnosticError(messageContainer, "Messages Search Feed", err, JSON.stringify(searchParams));
+                    showDiagnosticError(messageContainer, "Messages Search Feed", err, query);
                 });
         }
 
-        // 3. Поиск связанных вложений и генерация прямой ссылки Wasabi S3
-        function renderAttachmentLinks(messageId) {
-            ZOHO.CRM.API.getRelatedRecords({
+        // 3. Ленивая загрузка вложений: не больше N запросов к Zoho одновременно
+        const attachmentQueue = [];
+        let attachmentRequestsRunning = 0;
+
+        const attachmentObserver = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting) return;
+                attachmentObserver.unobserve(entry.target);
+                attachmentQueue.push(entry.target.dataset.messageId);
+            });
+            pumpAttachmentQueue();
+        }, { root: document.getElementById('message-container'), rootMargin: "400px 0px" });
+
+        function pumpAttachmentQueue() {
+            while (attachmentRequestsRunning < CONFIG.ATTACHMENT_REQUESTS_AT_ONCE && attachmentQueue.length > 0) {
+                const messageId = attachmentQueue.shift();
+                attachmentRequestsRunning++;
+                renderAttachments(messageId).finally(() => {
+                    attachmentRequestsRunning--;
+                    pumpAttachmentQueue();
+                });
+            }
+        }
+
+        function fileExtension(name) {
+            const match = String(name || "").toLowerCase().match(/\.([a-z0-9]+)(?:[?#].*)?$/);
+            return match ? match[1] : "";
+        }
+
+        function mediaKind(name) {
+            const ext = fileExtension(name);
+            for (const kind of Object.keys(MEDIA_TYPES)) {
+                if (MEDIA_TYPES[kind].includes(ext)) return kind;
+            }
+            return "file";
+        }
+
+        // У каждого файла в Zoho обычно два вложения:
+        //  - "Link URL" (0 байт) со ссылкой на оригинал в хранилище WhatsApp (Wasabi S3)
+        //  - копия файла в Zoho (для фото и голосовых), имя может отличаться: .jpeg -> .jpg
+        function pickMedia(attachments) {
+            const usable = attachments.filter(a => !/\.html?$/i.test(a.File_Name || a.file_Name || ""));
+            const linkAttachment = usable.find(a => {
+                const url = a.$link_url || "";
+                return url && !/workdrive\.zoho/i.test(url) && /^https?:\/\//i.test(url);
+            });
+            const savedCopy = usable.find(a => /workdrive\.zoho/i.test(a.$link_url || "") || Number(a.Size) > 0);
+
+            let url = "";
+            let fileName = "";
+            if (linkAttachment) {
+                url = linkAttachment.$link_url;
+                fileName = linkAttachment.File_Name || url.split("/").pop();
+            } else if (usable.length > 0) {
+                // Старые сообщения без Link URL: собираем ссылку на S3 по имени файла
+                fileName = usable[0].File_Name || usable[0].file_Name || "";
+                const s3Name = fileName.replace(/^(jpeg-.*)\.jpg$/i, "$1.jpeg");
+                url = `${CONFIG.S3_BASE_URL}/${CONFIG.S3_FOLDER}/${s3Name}`;
+            }
+            if (!url) return null;
+            return {
+                url: url,
+                fileName: fileName,
+                kind: mediaKind(fileName || url),
+                savedCopyUrl: savedCopy && /workdrive\.zoho/i.test(savedCopy.$link_url || "") ? savedCopy.$link_url : ""
+            };
+        }
+
+        function linkHtml(url, label) {
+            return `
+                <a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 bg-black bg-opacity-5 hover:bg-opacity-10 px-2.5 py-2 rounded border border-gray-200 transition-all self-start text-xs font-semibold text-[#008069] max-w-full">
+                    <svg class="w-3.5 h-3.5 flex-shrink-0 text-[#008069]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                    </svg>
+                    <span class="truncate max-w-[220px]" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+                </a>`;
+        }
+
+        // Если оригинал в хранилище WhatsApp удалён (или браузер не может его проиграть), показываем ссылки
+        function showMediaFallback(container, media) {
+            const label = media.kind === "image" ? "Photo" : media.kind === "video" ? "Video" : media.kind === "audio" ? "Voice message" : "File";
+            let html = `<p class="text-[11px] text-gray-500 italic">${label} can't be shown here. The WhatsApp copy may have expired.</p>`;
+            if (media.savedCopyUrl) {
+                html += linkHtml(media.savedCopyUrl, "Open copy saved in Zoho");
+            }
+            html += linkHtml(media.url, media.fileName || "Original link");
+            container.innerHTML = html;
+        }
+
+        function renderMedia(container, media, messageId) {
+            container.innerHTML = "";
+            let element = null;
+
+            if (media.kind === "image") {
+                element = document.createElement('img');
+                element.className = "media-img";
+                element.loading = "lazy";
+                element.alt = media.fileName;
+                element.onclick = () => window.open(media.url, "_blank", "noopener");
+            } else if (media.kind === "video") {
+                element = document.createElement('video');
+                element.className = "media-video";
+                element.controls = true;
+                element.preload = "metadata";
+            } else if (media.kind === "audio") {
+                element = document.createElement('audio');
+                element.className = "media-audio";
+                element.controls = true;
+                element.preload = "metadata";
+            }
+
+            if (!element) {
+                container.innerHTML = linkHtml(media.url, media.fileName || "Attachment");
+                return;
+            }
+
+            element.onerror = () => showMediaFallback(container, media);
+            element.src = media.url;
+            container.appendChild(element);
+
+            // Ссылка "скачать" под голосовым: не все браузеры проигрывают .oga
+            if (media.kind === "audio" || media.kind === "video") {
+                const download = document.createElement('a');
+                download.href = media.url;
+                download.target = "_blank";
+                download.rel = "noopener";
+                download.className = "text-[10px] text-[#008069] hover:underline self-start";
+                download.textContent = "Open file";
+                container.appendChild(download);
+            }
+
+            // Подпись-заглушка ("Image", "Video"...) не нужна, когда виден сам файл
+            const textEl = document.getElementById(`text-${messageId}`);
+            if (textEl && textEl.dataset.placeholder === "true") {
+                textEl.style.display = "none";
+            }
+        }
+
+        function renderAttachments(messageId) {
+            return ZOHO.CRM.API.getRelatedRecords({
                 Entity: CONFIG.MESSAGES_MODULE,
                 RecordID: messageId,
                 RelatedList: "Attachments",
                 page: 1,
-                per_page: 5
+                per_page: 10
             })
             .then(function(response) {
                 const container = document.getElementById(`attachments-${messageId}`);
                 if (!container) return;
 
                 if (response && response.data && response.data.length > 0) {
-                    container.innerHTML = ""; // Очищаем контейнер
-                    
-                    response.data.forEach(attachment => {
-                        const fileName = attachment.File_Name || attachment.file_Name || "Attachment";
-                        
-                        // Конструируем прямую ссылку на Wasabi S3 по статическому шаблону
-                        const s3Url = `${CONFIG.S3_BASE_URL}/${CONFIG.S3_FOLDER}/${fileName}`;
-                        
-                        const linkEl = document.createElement('a');
-                        linkEl.href = s3Url;
-                        linkEl.target = "_blank"; // Открываем в новой вкладке
-                        linkEl.className = "inline-flex items-center gap-2 bg-black bg-opacity-5 hover:bg-opacity-10 px-2.5 py-2 rounded border border-gray-200 transition-all self-start text-xs font-semibold text-[#008069] max-w-full mt-1";
-                        
-                        linkEl.innerHTML = `
-                            <svg class="w-3.5 h-3.5 flex-shrink-0 text-[#008069]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
-                            </svg>
-                            <span class="truncate max-w-[220px]" title="${fileName}">${fileName}</span>
-                        `;
-                        container.appendChild(linkEl);
-                    });
+                    const media = pickMedia(response.data);
+                    if (media) {
+                        renderMedia(container, media, messageId);
+                    }
                 }
             })
             .catch(function(err) {
                 // Если файлов нет, Zoho отдаст ошибку 204. Безопасно очищаем блок.
                 const container = document.getElementById(`attachments-${messageId}`);
-                if (container) container.innerHTML = ""; 
+                if (container) container.innerHTML = "";
             });
         }
 
         function showDiagnosticError(targetElement, contextName, errorObj, attemptedQuery) {
             targetElement.innerHTML = `
                 <div class="p-4 m-2 bg-red-50 border border-red-200 rounded-lg text-red-700 text-xs">
-                    <p class="font-bold text-sm mb-1">⚠️ Error querying ${contextName}</p>
-                    <pre class="bg-red-100 p-2 rounded overflow-auto max-h-32 font-mono text-[10px]">${JSON.stringify(errorObj, null, 2)}</pre>
+                    <p class="font-bold text-sm mb-1">⚠️ Error querying ${escapeHtml(contextName)}</p>
+                    <pre class="bg-red-100 p-2 rounded overflow-auto max-h-32 font-mono text-[10px]">${escapeHtml(JSON.stringify(errorObj, null, 2))}</pre>
                     <p class="font-semibold mt-2">Executed Query Parameters:</p>
-                    <pre class="bg-gray-100 p-2 rounded overflow-auto font-mono text-[10px] text-gray-600 whitespace-pre-wrap">${attemptedQuery}</pre>
+                    <pre class="bg-gray-100 p-2 rounded overflow-auto font-mono text-[10px] text-gray-600 whitespace-pre-wrap">${escapeHtml(attemptedQuery)}</pre>
                 </div>`;
         }
     </script>
