@@ -64,6 +64,8 @@
             PAGE_SIZE: 200,
             MAX_PAGES: 15,
             ATTACHMENT_REQUESTS_AT_ONCE: 4,
+            // Standalone-функция Zoho, которая отдаёт сохранённый в Zoho файл (base64)
+            FILE_FUNCTION: "chat_attachment",
 
             // Настройки Wasabi S3
             S3_BASE_URL: "https://s3.eu-central-1.wasabisys.com/in-files",
@@ -363,7 +365,7 @@
                 const url = a.$link_url || "";
                 return url && !/workdrive\.zoho/i.test(url) && /^https?:\/\//i.test(url);
             });
-            const savedCopy = usable.find(a => /workdrive\.zoho/i.test(a.$link_url || "") || Number(a.Size) > 0);
+            const savedCopy = usable.find(a => a.id && (a.$type === "Attachment" || Number(a.Size) > 0));
 
             let url = "";
             let fileName = "";
@@ -381,8 +383,35 @@
                 url: url,
                 fileName: fileName,
                 kind: mediaKind(fileName || url),
+                savedCopy: savedCopy ? { id: savedCopy.id, fileName: savedCopy.File_Name || savedCopy.file_Name || fileName } : null,
                 savedCopyUrl: savedCopy && /workdrive\.zoho/i.test(savedCopy.$link_url || "") ? savedCopy.$link_url : ""
             };
+        }
+
+        const MIME_TYPES = {
+            jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif",
+            mp4: "video/mp4", "3gp": "video/3gpp", mov: "video/quicktime", webm: "video/webm", m4v: "video/mp4",
+            oga: "audio/ogg", ogg: "audio/ogg", opus: "audio/ogg", mp3: "audio/mpeg", m4a: "audio/mp4",
+            aac: "audio/aac", amr: "audio/amr", wav: "audio/wav", pdf: "application/pdf"
+        };
+        const savedFileCache = new Map();
+
+        // Копию файла из Zoho отдаёт функция CONFIG.FILE_FUNCTION (base64), из неё делаем blob-ссылку
+        function loadSavedCopy(messageId, savedCopy) {
+            if (savedFileCache.has(savedCopy.id)) return Promise.resolve(savedFileCache.get(savedCopy.id));
+            return ZOHO.CRM.FUNCTIONS.execute(CONFIG.FILE_FUNCTION, {
+                arguments: JSON.stringify({ messageId: String(messageId), attachmentId: String(savedCopy.id) })
+            }).then(function(response) {
+                const output = response && response.details && response.details.output;
+                if (!response || response.code !== "success" || !output) throw response;
+                const binary = atob(String(output).replace(/\s/g, ""));
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                const type = MIME_TYPES[fileExtension(savedCopy.fileName)] || "application/octet-stream";
+                const blobUrl = URL.createObjectURL(new Blob([bytes], { type: type }));
+                savedFileCache.set(savedCopy.id, blobUrl);
+                return blobUrl;
+            });
         }
 
         function linkHtml(url, label) {
@@ -433,7 +462,8 @@
                 return;
             }
 
-            element.onerror = () => showMediaFallback(container, media);
+            // Копия из Zoho не открылась -> пробуем ссылку WhatsApp, потом показываем ссылки
+            element.onerror = () => media.fallback ? renderMedia(container, media.fallback, messageId) : showMediaFallback(container, media);
             element.src = media.url;
             container.appendChild(element);
 
@@ -467,12 +497,21 @@
                 const container = document.getElementById(`attachments-${messageId}`);
                 if (!container) return;
 
-                if (response && response.data && response.data.length > 0) {
-                    const media = pickMedia(response.data);
-                    if (media) {
-                        renderMedia(container, media, messageId);
-                    }
+                if (!(response && response.data && response.data.length > 0)) return;
+                const media = pickMedia(response.data);
+                if (!media) return;
+
+                // Есть настоящий файл в Zoho -> показываем его, иначе файл по ссылке WhatsApp
+                if (!media.savedCopy) {
+                    renderMedia(container, media, messageId);
+                    return;
                 }
+                return loadSavedCopy(messageId, media.savedCopy)
+                    .then(blobUrl => renderMedia(container, Object.assign({}, media, { url: blobUrl, fallback: media }), messageId))
+                    .catch(err => {
+                        logDebug(`Saved file ${media.savedCopy.id} not loaded: ${JSON.stringify(err)}`, "error");
+                        renderMedia(container, media, messageId);
+                    });
             })
             .catch(function(err) {
                 // Если файлов нет, Zoho отдаст ошибку 204. Безопасно очищаем блок.
