@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhatsApp Viewer for Zoho CRM</title>
+    <title>Chats</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://live.zwidgets.com/js-sdk/1.1/ZohoEmbededAppSDK.min.js"></script>
     <style>
@@ -13,22 +13,39 @@
         .media-img { max-width: 280px; max-height: 320px; border-radius: 6px; cursor: zoom-in; object-fit: cover; background: #e9edef; }
         .media-video { max-width: 320px; max-height: 360px; border-radius: 6px; background: #000; }
         .media-audio { width: 260px; max-width: 100%; }
+        .msg-link { color: #027eb5; text-decoration: underline; word-break: break-all; }
+        .chat-item.active { background: #f0f2f5; }
+
+        /* Узкая колонка (виджет справа от полей карточки): список чатов — полосой сверху, переписка — на всю ширину.
+           Один чат — полосы нет совсем. Ширина iframe = ширина виджета, поэтому обычный media-запрос. */
+        @media (max-width: 700px) {
+            #root { flex-direction: column; }
+            #sidebar { width: 100%; height: auto; max-height: 35%; border-right: 0; border-bottom: 1px solid #e9edef; }
+            #sidebar.single { display: none; }
+            #sidebar-header { padding: 8px 12px; }
+            #sidebar-header h2 { font-size: 15px; }
+            #logs-panel { display: none; }
+            #chat-pane { width: 100%; flex: 1 1 auto; min-height: 0; }
+            #message-container { padding: 12px; }
+            .chat-item { padding: 8px 12px; }
+            .media-img, .media-video { max-width: 100%; }
+        }
     </style>
 </head>
 <body class="bg-[#f0f2f5] h-screen flex flex-col font-sans text-[#111b21] overflow-hidden">
 
-    <div class="flex flex-1 h-full w-full bg-[#eae6df] overflow-hidden">
+    <div id="root" class="flex flex-1 h-full w-full bg-[#eae6df] overflow-hidden">
 
-        <div class="w-1/3 bg-white border-r border-[#e9edef] flex flex-col h-full">
-            <div class="bg-[#f0f2f5] p-4 flex items-center justify-between border-b border-[#e9edef]">
-                <h2 class="text-lg font-bold text-[#008069]">WhatsApp Chats</h2>
+        <div id="sidebar" class="w-1/3 bg-white border-r border-[#e9edef] flex flex-col h-full">
+            <div id="sidebar-header" class="bg-[#f0f2f5] p-4 flex items-center justify-between border-b border-[#e9edef]">
+                <h2 class="text-lg font-bold text-[#008069]">Chats</h2>
             </div>
 
             <div id="chats-list" class="flex-1 overflow-y-auto custom-scrollbar bg-white">
                 <div class="p-4 text-center text-gray-500" id="loading-spinner">Connecting to Zoho CRM...</div>
             </div>
 
-            <div class="border-t border-gray-200 bg-gray-50 p-2 text-xs">
+            <div id="logs-panel" class="border-t border-gray-200 bg-gray-50 p-2 text-xs">
                 <details class="cursor-pointer">
                     <summary class="font-semibold text-gray-700 select-none">🛠️ System Connection Logs</summary>
                     <div class="mt-2 space-y-1 font-mono text-[10px] text-gray-600 bg-white p-2 border rounded max-h-32 overflow-y-auto" id="diagnostic-logs">
@@ -37,7 +54,7 @@
             </div>
         </div>
 
-        <div class="w-2/3 flex flex-col h-full bg-[#efeae2] relative" style="background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-repeat: repeat; opacity: 0.99;">
+        <div id="chat-pane" class="w-2/3 flex flex-col h-full bg-[#efeae2] relative" style="background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-repeat: repeat; opacity: 0.99;">
 
             <div class="bg-[#f0f2f5] px-4 py-3 flex items-center border-b border-[#e9edef] z-10 w-full">
                 <div class="ml-2">
@@ -48,7 +65,7 @@
 
             <div id="message-container" class="flex-1 overflow-y-auto p-6 flex flex-col space-y-3 custom-scrollbar">
                 <div class="m-auto text-center text-gray-500 bg-white bg-opacity-80 px-4 py-2 rounded-lg shadow-sm">
-                    Select a conversation from the sidebar layout.
+                    Select a conversation from the list.
                 </div>
             </div>
         </div>
@@ -80,6 +97,8 @@
         // Тексты-заглушки, которые Make пишет вместо подписи; при показанном файле их не дублируем
         const PLACEHOLDER_BODIES = ["image", "video", "voice", "audio", "document", "sticker", "file"];
 
+        // Текст каждого сообщения открытого чата: из него берём ссылку на файл, когда в Zoho нет "Link URL"
+        const messageTexts = new Map();
         let currentRecordId = null;
         let currentModule = "Contacts";
         let handshakeCompleted = false;
@@ -110,6 +129,48 @@
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#39;");
+        }
+
+        // Мессенджер и номер Weole чата: "WhatsApp · Sales" (поля Conversations Messager и Number)
+        function chatLabel(chat) {
+            return [chat && chat.Messager, chat && chat.Number].filter(v => v && v !== "-None-").join(" · ");
+        }
+
+        // Ссылка Wazzup на файл: имя файла — в ?filename=, у документов бывает с пробелами и кириллицей
+        function parseLink(text) {
+            try {
+                const url = new URL(String(text).trim());
+                if (!/^https?:$/.test(url.protocol)) return null;
+                return { url: url.href, fileName: url.searchParams.get("filename") || "" };
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Первая ссылка на файл в тексте сообщения (так агент пишет фото, голосовые и документы)
+        function fileLinkFromText(text) {
+            for (const line of String(text || "").split("\n")) {
+                if (!/^\s*https?:\/\//i.test(line)) continue;
+                const link = parseLink(line);
+                if (link && link.fileName) return link;
+            }
+            return null;
+        }
+
+        // Текст сообщения с кликабельными ссылками. Строка целиком из ссылки — ссылка на всю строку
+        // (в имени файла могут быть пробелы), подпись — имя файла.
+        function linkifyText(text) {
+            return String(text || "").split("\n").map(line => {
+                if (/^\s*https?:\/\//i.test(line)) {
+                    const link = parseLink(line);
+                    if (link) {
+                        const label = link.fileName ? `📎 ${link.fileName}` : line.trim();
+                        return `<a class="msg-link" href="${escapeHtml(link.url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+                    }
+                }
+                return escapeHtml(line).replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/g,
+                    u => `<a class="msg-link" href="${u}" target="_blank" rel="noopener">${u}</a>`);
+            }).join("\n");
         }
 
         function logDebug(message, type = "info") {
@@ -202,8 +263,13 @@
                 .then(function(chats) {
                     chatListDiv.innerHTML = "";
 
+                    // Один чат — в узкой колонке список не нужен (CSS прячет #sidebar.single)
+                    document.getElementById('sidebar').classList.toggle('single', chats.length === 1);
+
                     if (chats.length === 0) {
                         chatListDiv.innerHTML = `<div class="p-4 text-center text-gray-400">No chats found for this record.</div>`;
+                        document.getElementById('active-chat-name').innerText = "No chats yet";
+                        document.getElementById('message-container').innerHTML = "";
                         logDebug("No conversation records found.", "info");
                         return;
                     }
@@ -217,15 +283,17 @@
                     sortedChats.forEach(chat => {
                         const dateStr = chat.Modified_Time ? new Date(chat.Modified_Time).toLocaleDateString() : '';
                         const chatEl = document.createElement('div');
-                        chatEl.className = "flex items-center justify-between p-4 border-b border-[#f0f2f5] hover:bg-[#f0f2f5] cursor-pointer transition";
+                        chatEl.className = "chat-item flex items-center justify-between p-4 border-b border-[#f0f2f5] hover:bg-[#f0f2f5] cursor-pointer transition";
+                        chatEl.dataset.chatId = chat.id;
+                        chatEl.title = `ID: ${chat.id}`;
 
-                        chatEl.onclick = () => selectConversation(chat.id, chat.Name);
+                        chatEl.onclick = () => selectConversation(chat.id, chat.Name, chatLabel(chat));
 
                         chatEl.innerHTML = `
                             <div class="flex-1 min-w-0 pr-2">
-                                <p class="font-bold text-[#111b21] truncate text-sm">${escapeHtml(chat.Name || 'WhatsApp Chat')}</p>
-                                <p class="text-[11px] text-[#008069] truncate font-medium mt-0.5">${escapeHtml(chat.Messager_Chat_ID || 'No Chat ID')}</p>
-                                <p class="text-[9px] text-gray-400 truncate">ID: ${escapeHtml(chat.id)}</p>
+                                <p class="font-bold text-[#111b21] truncate text-sm">${escapeHtml(chat.Name || 'Chat')}</p>
+                                <p class="text-[11px] text-[#008069] truncate font-medium mt-0.5">${escapeHtml(chatLabel(chat) || 'Chat')}</p>
+                                <p class="text-[9px] text-gray-400 truncate">${escapeHtml(chat.Messager_Chat_ID || '')}</p>
                             </div>
                             <span class="text-[11px] text-gray-400 self-start whitespace-nowrap mt-1">${dateStr}</span>
                         `;
@@ -234,7 +302,7 @@
 
                     // Если чат один, сразу открываем его
                     if (sortedChats.length === 1) {
-                        selectConversation(sortedChats[0].id, sortedChats[0].Name);
+                        selectConversation(sortedChats[0].id, sortedChats[0].Name, chatLabel(sortedChats[0]));
                     }
                 })
                 .catch(err => {
@@ -244,13 +312,15 @@
         }
 
         // 2. Поиск сообщений выбранного чата (Правая панель)
-        function selectConversation(conversationId, name) {
+        function selectConversation(conversationId, name, label) {
             activeConversationId = conversationId;
             attachmentObserver.disconnect();
             attachmentQueue.length = 0;
+            document.querySelectorAll('.chat-item').forEach(el => el.classList.toggle('active', el.dataset.chatId === String(conversationId)));
 
-            document.getElementById('active-chat-name').innerText = name || "WhatsApp Chat";
-            document.getElementById('active-chat-status').innerText = "Streaming records...";
+            const prefix = label ? `${label} · ` : "";
+            document.getElementById('active-chat-name').innerText = name || "Chat";
+            document.getElementById('active-chat-status').innerText = `${prefix}Loading...`;
             const messageContainer = document.getElementById('message-container');
             messageContainer.innerHTML = `<div class="m-auto text-gray-500">Loading messages...</div>`;
 
@@ -261,7 +331,7 @@
                 .then(function(messages) {
                     if (activeConversationId !== conversationId) return;
                     messageContainer.innerHTML = "";
-                    document.getElementById('active-chat-status').innerText = messages.length ? `${messages.length} messages` : "";
+                    document.getElementById('active-chat-status').innerText = `${prefix}${messages.length} messages`;
 
                     if (messages.length === 0) {
                         messageContainer.innerHTML = `<div class="m-auto text-gray-400">No message items found.</div>`;
@@ -291,8 +361,12 @@
 
                         // Текст сообщения
                         const messageText = msg.Message_Body || "";
-                        const isPlaceholder = PLACEHOLDER_BODIES.includes(messageText.trim().toLowerCase());
-                        contentHtml += `<p id="text-${msg.id}" class="whitespace-pre-wrap break-words leading-relaxed" data-placeholder="${isPlaceholder}">${escapeHtml(messageText)}</p>`;
+                        messageTexts.set(String(msg.id), messageText);
+                        // Заглушка вместо подписи ("Image", "[image]") или только ссылка на файл — при показанном файле прячем
+                        const bare = messageText.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+                        const onlyLink = /^https?:\/\//i.test(messageText.trim()) && !messageText.trim().includes("\n");
+                        const isPlaceholder = PLACEHOLDER_BODIES.includes(bare) || onlyLink;
+                        contentHtml += `<p id="text-${msg.id}" class="whitespace-pre-wrap break-words leading-relaxed" data-placeholder="${isPlaceholder}">${linkifyText(messageText)}</p>`;
 
                         // Получаем полную дату dd.mm.yyyy hh:mm:ss вместо стандартного формата времени
                         const fullDateTimeStr = formatFullDateTime(msg.Created_Time);
@@ -359,8 +433,10 @@
         // У каждого файла в Zoho обычно два вложения:
         //  - "Link URL" (0 байт) со ссылкой на оригинал в хранилище WhatsApp (Wasabi S3)
         //  - копия файла в Zoho (для фото и голосовых), имя может отличаться: .jpeg -> .jpg
-        function pickMedia(attachments) {
+        // Новые сообщения (агент Weole Pulse): ссылка Wazzup — в тексте сообщения, файл — обычным вложением.
+        function pickMedia(attachments, text) {
             const usable = attachments.filter(a => !/\.html?$/i.test(a.File_Name || a.file_Name || ""));
+            const textLink = fileLinkFromText(text);
             const linkAttachment = usable.find(a => {
                 const url = a.$link_url || "";
                 return url && !/workdrive\.zoho/i.test(url) && /^https?:\/\//i.test(url);
@@ -372,6 +448,9 @@
             if (linkAttachment) {
                 url = linkAttachment.$link_url;
                 fileName = linkAttachment.File_Name || url.split("/").pop();
+            } else if (textLink) {
+                url = textLink.url;
+                fileName = (savedCopy && (savedCopy.File_Name || savedCopy.file_Name)) || textLink.fileName;
             } else if (usable.length > 0) {
                 // Старые сообщения без Link URL: собираем ссылку на S3 по имени файла
                 fileName = usable[0].File_Name || usable[0].file_Name || "";
@@ -497,8 +576,12 @@
                 const container = document.getElementById(`attachments-${messageId}`);
                 if (!container) return;
 
-                if (!(response && response.data && response.data.length > 0)) return;
-                const media = pickMedia(response.data);
+                const text = messageTexts.get(String(messageId));
+                if (!(response && response.data && response.data.length > 0)) {
+                    renderTextLinkMedia(container, text, messageId);
+                    return;
+                }
+                const media = pickMedia(response.data, text);
                 if (!media) return;
 
                 // Есть настоящий файл в Zoho -> показываем его, иначе файл по ссылке WhatsApp
@@ -514,10 +597,22 @@
                     });
             })
             .catch(function(err) {
-                // Если файлов нет, Zoho отдаст ошибку 204. Безопасно очищаем блок.
+                // Если файлов нет, Zoho отдаст ошибку 204: показываем файл по ссылке из текста, если она есть.
                 const container = document.getElementById(`attachments-${messageId}`);
-                if (container) container.innerHTML = "";
+                if (!container) return;
+                container.innerHTML = "";
+                renderTextLinkMedia(container, messageTexts.get(String(messageId)), messageId);
             });
+        }
+
+        // Вложений в Zoho нет (агент ещё не вложил файл): фото, видео и голосовые — прямо по ссылке Wazzup из текста.
+        // Документ остаётся ссылкой в тексте.
+        function renderTextLinkMedia(container, text, messageId) {
+            const link = fileLinkFromText(text);
+            if (!link) return;
+            const kind = mediaKind(link.fileName);
+            if (kind === "file") return;
+            renderMedia(container, { url: link.url, fileName: link.fileName, kind: kind, savedCopy: null, savedCopyUrl: "" }, messageId);
         }
 
         function showDiagnosticError(targetElement, contextName, errorObj, attemptedQuery) {
