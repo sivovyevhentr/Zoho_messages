@@ -186,11 +186,41 @@
             if (handshakeCompleted) return;
             handshakeCompleted = true;
             currentRecordId = entityId;
+            // Сделка: у Conversations нет связи со сделкой — показываем чаты её контакта (Contact_Name)
+            if (entityModule === "Deals") {
+                loadDealConversations(entityId);
+                return;
+            }
             if (entityModule && CONFIG.LOOKUP_IN_CONV[entityModule]) {
                 currentModule = entityModule;
             }
             logDebug(`Target ${currentModule} ID Resolved: ${currentRecordId}`, "success");
             loadConversations(currentRecordId);
+        }
+
+        function loadDealConversations(dealId) {
+            logDebug(`Deal ${dealId}: looking up its contact...`);
+            ZOHO.CRM.API.getRecord({ Entity: "Deals", RecordID: dealId })
+                .then(function(response) {
+                    const deal = response && response.data && response.data[0];
+                    const contactId = deal && deal.Contact_Name && deal.Contact_Name.id;
+                    if (!contactId) {
+                        document.getElementById('sidebar').classList.add('single');
+                        document.getElementById('chats-list').innerHTML = `<div class="p-4 text-center text-gray-400">This deal has no contact.</div>`;
+                        document.getElementById('active-chat-name').innerText = "No chats: the deal has no contact";
+                        document.getElementById('message-container').innerHTML = "";
+                        logDebug("Deal has no Contact_Name.", "info");
+                        return;
+                    }
+                    currentModule = "Contacts";
+                    currentRecordId = contactId;
+                    logDebug(`Deal contact resolved: ${contactId}`, "success");
+                    loadConversations(contactId);
+                })
+                .catch(function(err) {
+                    logDebug(`Deal lookup error: ${JSON.stringify(err)}`, "error");
+                    showDiagnosticError(document.getElementById('chats-list'), "Deal contact", err, `Deals/${dealId}`);
+                });
         }
 
         logDebug("Widget loaded. Starting Zoho Handshake...");
