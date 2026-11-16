@@ -81,6 +81,8 @@
             PAGE_SIZE: 200,
             MAX_PAGES: 15,
             ATTACHMENT_REQUESTS_AT_ONCE: 4,
+            // Высота виджета, px: Zoho по умолчанию даёт 500, а колонка Chats в Canvas выше — внизу оставалось пусто
+            HEIGHT: 570,
             // Standalone-функция Zoho, которая отдаёт сохранённый в Zoho файл (base64)
             FILE_FUNCTION: "chat_attachment",
 
@@ -236,7 +238,9 @@
             }
         });
 
-        ZOHO.embeddedApp.init();
+        ZOHO.embeddedApp.init()
+            .then(() => ZOHO.CRM.UI.Resize({ height: String(CONFIG.HEIGHT) }))
+            .catch(err => logDebug("Resize error: " + JSON.stringify(err), "error"));
 
         // Сценарий 2: Резервный Fallback (всегда страхует от зависания "Connecting...")
         setTimeout(() => {
